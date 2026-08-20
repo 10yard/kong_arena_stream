@@ -160,10 +160,7 @@ async def broadcast_batch(stream_id, packet):
             if stream_id not in subscriptions:
                 continue
 
-            await viewer.send_text(json.dumps({
-                "type": "batch",
-                "stream_id": stream_id,
-            }))
+            # KAB2 contains the stream ID, so send one binary message only.
             await viewer.send_bytes(packet)
 
         except Exception:
@@ -876,34 +873,82 @@ function updateFrame(streamId, blob) {
     }
 }
 
-function enqueueBatch(streamId, buffer) {
+function enqueueBatch(buffer) {
     const view = new DataView(buffer);
-    if (view.byteLength < 6 || String.fromCharCode(
-        view.getUint8(0), view.getUint8(1),
-        view.getUint8(2), view.getUint8(3)
-    ) !== "KAB1") {
+
+    // KAB2:
+    // magic "KAB2", stream-id length, stream-id, frame count,
+    // then repeated frame length + PNG bytes.
+    if (
+        view.byteLength < 8 ||
+        String.fromCharCode(
+            view.getUint8(0),
+            view.getUint8(1),
+            view.getUint8(2),
+            view.getUint8(3)
+        ) !== "KAB2"
+    ) {
+        console.warn("Invalid Kong Arena KAB2 batch");
         return;
     }
 
-    const frameCount = view.getUint16(4, false);
-    let offset = 6;
-    if (!frameQueues.has(streamId)) frameQueues.set(streamId, []);
+    const streamIdLength = view.getUint16(4, false);
+    const streamIdStart = 6;
+    const streamIdEnd = streamIdStart + streamIdLength;
+
+    if (streamIdEnd + 2 > view.byteLength) {
+        console.warn("Invalid KAB2 stream ID");
+        return;
+    }
+
+    const streamId = new TextDecoder().decode(
+        buffer.slice(streamIdStart, streamIdEnd)
+    );
+
+    const frameCount = view.getUint16(streamIdEnd, false);
+    let offset = streamIdEnd + 2;
+
+    if (!frameQueues.has(streamId)) {
+        frameQueues.set(streamId, []);
+    }
+
     const queue = frameQueues.get(streamId);
 
     for (let i = 0; i < frameCount; i += 1) {
         if (offset + 4 > view.byteLength) break;
-        const length = view.getUint32(offset, false);
+
+        const frameLength = view.getUint32(offset, false);
         offset += 4;
-        if (length <= 0 || offset + length > view.byteLength) break;
-        queue.push(new Blob([
-            buffer.slice(offset, offset + length)
-        ], {type: "image/png"}));
-        offset += length;
+
+        if (
+            frameLength <= 0 ||
+            offset + frameLength > view.byteLength
+        ) {
+            console.warn("Invalid KAB2 frame length");
+            break;
+        }
+
+        queue.push(
+            new Blob(
+                [buffer.slice(
+                    offset,
+                    offset + frameLength
+                )],
+                { type: "image/png" }
+            )
+        );
+
+        offset += frameLength;
     }
 
+    // Keep at most four seconds of queued playback.
     const maxQueueFrames = PLAYBACK_FPS * 4;
+
     if (queue.length > maxQueueFrames) {
-        queue.splice(0, queue.length - maxQueueFrames);
+        queue.splice(
+            0,
+            queue.length - maxQueueFrames
+        );
     }
 }
 
@@ -1017,79 +1062,10 @@ ws.onmessage = function(event) {
             updateStreams();
         }
 
-        else if (
-            data.type === "batch" &&
-            selectedStreamIds.includes(
-                data.stream_id
-            )
-        ) {
-            expectedBatchStreamId =
-                data.stream_id;
-        }
     }
 
     else if (event.data instanceof ArrayBuffer) {
-        const view = new DataView(event.data);
-
-        if (
-            view.byteLength < 8 ||
-            String.fromCharCode(
-                view.getUint8(0),
-                view.getUint8(1),
-                view.getUint8(2),
-                view.getUint8(3)
-            ) !== "KAB2"
-        ) {
-            console.warn("Invalid Kong Arena batch");
-            return;
-        }
-
-        const streamIdLength =
-            view.getUint16(4, false);
-
-        const streamIdStart = 6;
-        const streamIdEnd =
-            streamIdStart + streamIdLength;
-
-        if (streamIdEnd + 2 > view.byteLength) {
-            return;
-        }
-
-        const streamId =
-            new TextDecoder().decode(
-                event.data.slice(
-                    streamIdStart,
-                    streamIdEnd
-                )
-            );
-
-        // Rebuild a KAB1-style buffer for the existing frame parser:
-        // KAB1 + frame count + frame records.
-        const kab1 = new Uint8Array(
-            4 + 2 + (view.byteLength - (streamIdEnd + 2))
-        );
-
-        kab1.set(
-            new Uint8Array([
-                75, 65, 66, 49
-            ]),
-            0
-        );
-
-        kab1.set(
-            new Uint8Array(
-                event.data.slice(
-                    streamIdEnd,
-                    view.byteLength
-                )
-            ),
-            4
-        );
-
-        enqueueBatch(
-            streamId,
-            kab1.buffer
-        );
+        enqueueBatch(event.data);
     }
 };
 
