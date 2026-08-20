@@ -153,25 +153,34 @@ async def broadcast_stream_end(stream_id):
 
 
 async def broadcast_frame(stream_id, frame):
-    dead = []
+    # Take a snapshot of the viewers first. This prevents a slow viewer
+    # from holding up delivery to every other viewer.
+    targets = [
+        viewer
+        for viewer, subscriptions in list(viewers.items())
+        if stream_id in subscriptions
+    ]
 
-    for viewer, subscriptions in list(viewers.items()):
-        try:
-            if stream_id not in subscriptions:
-                continue
+    async def send_frame(viewer):
+        # Keep the control message and its frame together for this viewer.
+        await viewer.send_text(json.dumps({
+            "type": "frame",
+            "stream_id": stream_id,
+        }))
+        await viewer.send_bytes(frame)
 
-            await viewer.send_text(json.dumps({
-                "type": "frame",
-                "stream_id": stream_id,
-            }))
+    results = await asyncio.gather(
+        *(
+            send_frame(viewer)
+            for viewer in targets
+        ),
+        return_exceptions=True,
+    )
 
-            await viewer.send_bytes(frame)
-
-        except Exception:
-            dead.append(viewer)
-
-    for viewer in dead:
-        viewers.pop(viewer, None)
+    # Remove only viewers whose send failed.
+    for viewer, result in zip(targets, results):
+        if isinstance(result, Exception):
+            viewers.pop(viewer, None)
 
 
 @app.get("/")
