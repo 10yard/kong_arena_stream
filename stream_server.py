@@ -481,7 +481,7 @@ const MAX_OPTIONS = {
 let allStreams = [];
 let selectedStreamIds = [];
 let streamTiles = new Map();
-let expectedBatchStreamId = null;
+
 
 const PLAYBACK_FPS = 20;
 const PLAYBACK_INTERVAL = 1000 / PLAYBACK_FPS;
@@ -1028,13 +1028,68 @@ ws.onmessage = function(event) {
         }
     }
 
-    else if (expectedBatchStreamId) {
-        enqueueBatch(
-            expectedBatchStreamId,
-            event.data
+    else if (event.data instanceof ArrayBuffer) {
+        const view = new DataView(event.data);
+
+        if (
+            view.byteLength < 8 ||
+            String.fromCharCode(
+                view.getUint8(0),
+                view.getUint8(1),
+                view.getUint8(2),
+                view.getUint8(3)
+            ) !== "KAB2"
+        ) {
+            console.warn("Invalid Kong Arena batch");
+            return;
+        }
+
+        const streamIdLength =
+            view.getUint16(4, false);
+
+        const streamIdStart = 6;
+        const streamIdEnd =
+            streamIdStart + streamIdLength;
+
+        if (streamIdEnd + 2 > view.byteLength) {
+            return;
+        }
+
+        const streamId =
+            new TextDecoder().decode(
+                event.data.slice(
+                    streamIdStart,
+                    streamIdEnd
+                )
+            );
+
+        // Rebuild a KAB1-style buffer for the existing frame parser:
+        // KAB1 + frame count + frame records.
+        const kab1 = new Uint8Array(
+            4 + 2 + (view.byteLength - (streamIdEnd + 2))
         );
 
-        expectedBatchStreamId = null;
+        kab1.set(
+            new Uint8Array([
+                75, 65, 66, 49
+            ]),
+            0
+        );
+
+        kab1.set(
+            new Uint8Array(
+                event.data.slice(
+                    streamIdEnd,
+                    view.byteLength
+                )
+            ),
+            4
+        );
+
+        enqueueBatch(
+            streamId,
+            kab1.buffer
+        );
     }
 };
 
