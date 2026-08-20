@@ -43,17 +43,17 @@ async def client_stream(websocket: WebSocket):
         stream_announced = False
 
         while True:
-            frame = await websocket.receive_bytes()
+            packet = await websocket.receive_bytes()
 
             if stream_id in streams:
-                streams[stream_id]["frame"] = frame
+                streams[stream_id]["frame"] = packet
                 streams[stream_id]["last_frame"] = time.time()
 
             if not stream_announced:
                 stream_announced = True
                 await broadcast_stream_list()
 
-            await broadcast_frame(stream_id, frame)
+            await broadcast_batch(stream_id, packet)
 
     except WebSocketDisconnect:
         pass
@@ -94,7 +94,7 @@ async def viewer_stream(websocket: WebSocket):
 
                     if stream and stream["frame"]:
                         await websocket.send_text(json.dumps({
-                            "type": "frame",
+                            "type": "batch",
                             "stream_id": stream_id,
                         }))
                         await websocket.send_bytes(stream["frame"])
@@ -152,7 +152,7 @@ async def broadcast_stream_end(stream_id):
         viewers.pop(viewer, None)
 
 
-async def broadcast_frame(stream_id, frame):
+async def broadcast_batch(stream_id, packet):
     dead = []
 
     for viewer, subscriptions in list(viewers.items()):
@@ -161,11 +161,10 @@ async def broadcast_frame(stream_id, frame):
                 continue
 
             await viewer.send_text(json.dumps({
-                "type": "frame",
+                "type": "batch",
                 "stream_id": stream_id,
             }))
-
-            await viewer.send_bytes(frame)
+            await viewer.send_bytes(packet)
 
         except Exception:
             dead.append(viewer)
@@ -452,7 +451,7 @@ const ws = new WebSocket(
     `${protocol}://${location.host}/ws/viewer`
 );
 
-ws.binaryType = "blob";
+ws.binaryType = "arraybuffer";
 
 const streamsElement =
     document.getElementById("streams");
@@ -482,7 +481,11 @@ const MAX_OPTIONS = {
 let allStreams = [];
 let selectedStreamIds = [];
 let streamTiles = new Map();
-let expectedFrameStreamId = null;
+let expectedBatchStreamId = null;
+
+const PLAYBACK_FPS = 20;
+const PLAYBACK_INTERVAL = 1000 / PLAYBACK_FPS;
+const frameQueues = new Map();
 
 
 function getMaxStreams() {
@@ -627,6 +630,7 @@ function removeTile(streamId) {
     clearImage(tile);
     tile.element.remove();
     streamTiles.delete(streamId);
+    frameQueues.delete(streamId);
 }
 
 
@@ -872,6 +876,45 @@ function updateFrame(streamId, blob) {
     }
 }
 
+function enqueueBatch(streamId, buffer) {
+    const view = new DataView(buffer);
+    if (view.byteLength < 6 || String.fromCharCode(
+        view.getUint8(0), view.getUint8(1),
+        view.getUint8(2), view.getUint8(3)
+    ) !== "KAB1") {
+        return;
+    }
+
+    const frameCount = view.getUint16(4, false);
+    let offset = 6;
+    if (!frameQueues.has(streamId)) frameQueues.set(streamId, []);
+    const queue = frameQueues.get(streamId);
+
+    for (let i = 0; i < frameCount; i += 1) {
+        if (offset + 4 > view.byteLength) break;
+        const length = view.getUint32(offset, false);
+        offset += 4;
+        if (length <= 0 || offset + length > view.byteLength) break;
+        queue.push(new Blob([
+            buffer.slice(offset, offset + length)
+        ], {type: "image/png"}));
+        offset += length;
+    }
+
+    const maxQueueFrames = PLAYBACK_FPS * 4;
+    if (queue.length > maxQueueFrames) {
+        queue.splice(0, queue.length - maxQueueFrames);
+    }
+}
+
+setInterval(() => {
+    for (const [streamId, queue] of frameQueues.entries()) {
+        if (queue.length && selectedStreamIds.includes(streamId)) {
+            updateFrame(streamId, queue.shift());
+        }
+    }
+}, PLAYBACK_INTERVAL);
+
 
 backButton.addEventListener(
     "click",
@@ -975,23 +1018,23 @@ ws.onmessage = function(event) {
         }
 
         else if (
-            data.type === "frame" &&
+            data.type === "batch" &&
             selectedStreamIds.includes(
                 data.stream_id
             )
         ) {
-            expectedFrameStreamId =
+            expectedBatchStreamId =
                 data.stream_id;
         }
     }
 
-    else if (expectedFrameStreamId) {
-        updateFrame(
-            expectedFrameStreamId,
+    else if (expectedBatchStreamId) {
+        enqueueBatch(
+            expectedBatchStreamId,
             event.data
         );
 
-        expectedFrameStreamId = null;
+        expectedBatchStreamId = null;
     }
 };
 
