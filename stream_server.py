@@ -43,17 +43,17 @@ async def client_stream(websocket: WebSocket):
         stream_announced = False
 
         while True:
-            packet = await websocket.receive_bytes()
+            frame = await websocket.receive_bytes()
 
             if stream_id in streams:
-                streams[stream_id]["frame"] = packet
+                streams[stream_id]["frame"] = frame
                 streams[stream_id]["last_frame"] = time.time()
 
             if not stream_announced:
                 stream_announced = True
                 await broadcast_stream_list()
 
-            await broadcast_batch(stream_id, packet)
+            await broadcast_frame(stream_id, frame)
 
     except WebSocketDisconnect:
         pass
@@ -94,7 +94,7 @@ async def viewer_stream(websocket: WebSocket):
 
                     if stream and stream["frame"]:
                         await websocket.send_text(json.dumps({
-                            "type": "batch",
+                            "type": "frame",
                             "stream_id": stream_id,
                         }))
                         await websocket.send_bytes(stream["frame"])
@@ -152,7 +152,7 @@ async def broadcast_stream_end(stream_id):
         viewers.pop(viewer, None)
 
 
-async def broadcast_batch(stream_id, packet):
+async def broadcast_frame(stream_id, frame):
     dead = []
 
     for viewer, subscriptions in list(viewers.items()):
@@ -160,8 +160,12 @@ async def broadcast_batch(stream_id, packet):
             if stream_id not in subscriptions:
                 continue
 
-            # KAB2 contains the stream ID, so send one binary message only.
-            await viewer.send_bytes(packet)
+            await viewer.send_text(json.dumps({
+                "type": "frame",
+                "stream_id": stream_id,
+            }))
+
+            await viewer.send_bytes(frame)
 
         except Exception:
             dead.append(viewer)
@@ -448,7 +452,7 @@ const ws = new WebSocket(
     `${protocol}://${location.host}/ws/viewer`
 );
 
-ws.binaryType = "arraybuffer";
+ws.binaryType = "blob";
 
 const streamsElement =
     document.getElementById("streams");
@@ -478,11 +482,7 @@ const MAX_OPTIONS = {
 let allStreams = [];
 let selectedStreamIds = [];
 let streamTiles = new Map();
-
-
-const PLAYBACK_FPS = 20;
-const PLAYBACK_INTERVAL = 1000 / PLAYBACK_FPS;
-const frameQueues = new Map();
+let expectedFrameStreamId = null;
 
 
 function getMaxStreams() {
@@ -627,7 +627,6 @@ function removeTile(streamId) {
     clearImage(tile);
     tile.element.remove();
     streamTiles.delete(streamId);
-    frameQueues.delete(streamId);
 }
 
 
@@ -873,93 +872,6 @@ function updateFrame(streamId, blob) {
     }
 }
 
-function enqueueBatch(buffer) {
-    const view = new DataView(buffer);
-
-    // KAB2:
-    // magic "KAB2", stream-id length, stream-id, frame count,
-    // then repeated frame length + PNG bytes.
-    if (
-        view.byteLength < 8 ||
-        String.fromCharCode(
-            view.getUint8(0),
-            view.getUint8(1),
-            view.getUint8(2),
-            view.getUint8(3)
-        ) !== "KAB2"
-    ) {
-        console.warn("Invalid Kong Arena KAB2 batch");
-        return;
-    }
-
-    const streamIdLength = view.getUint16(4, false);
-    const streamIdStart = 6;
-    const streamIdEnd = streamIdStart + streamIdLength;
-
-    if (streamIdEnd + 2 > view.byteLength) {
-        console.warn("Invalid KAB2 stream ID");
-        return;
-    }
-
-    const streamId = new TextDecoder().decode(
-        buffer.slice(streamIdStart, streamIdEnd)
-    );
-
-    const frameCount = view.getUint16(streamIdEnd, false);
-    let offset = streamIdEnd + 2;
-
-    if (!frameQueues.has(streamId)) {
-        frameQueues.set(streamId, []);
-    }
-
-    const queue = frameQueues.get(streamId);
-
-    for (let i = 0; i < frameCount; i += 1) {
-        if (offset + 4 > view.byteLength) break;
-
-        const frameLength = view.getUint32(offset, false);
-        offset += 4;
-
-        if (
-            frameLength <= 0 ||
-            offset + frameLength > view.byteLength
-        ) {
-            console.warn("Invalid KAB2 frame length");
-            break;
-        }
-
-        queue.push(
-            new Blob(
-                [buffer.slice(
-                    offset,
-                    offset + frameLength
-                )],
-                { type: "image/png" }
-            )
-        );
-
-        offset += frameLength;
-    }
-
-    // Keep at most four seconds of queued playback.
-    const maxQueueFrames = PLAYBACK_FPS * 4;
-
-    if (queue.length > maxQueueFrames) {
-        queue.splice(
-            0,
-            queue.length - maxQueueFrames
-        );
-    }
-}
-
-setInterval(() => {
-    for (const [streamId, queue] of frameQueues.entries()) {
-        if (queue.length && selectedStreamIds.includes(streamId)) {
-            updateFrame(streamId, queue.shift());
-        }
-    }
-}, PLAYBACK_INTERVAL);
-
 
 backButton.addEventListener(
     "click",
@@ -1062,10 +974,24 @@ ws.onmessage = function(event) {
             updateStreams();
         }
 
+        else if (
+            data.type === "frame" &&
+            selectedStreamIds.includes(
+                data.stream_id
+            )
+        ) {
+            expectedFrameStreamId =
+                data.stream_id;
+        }
     }
 
-    else if (event.data instanceof ArrayBuffer) {
-        enqueueBatch(event.data);
+    else if (expectedFrameStreamId) {
+        updateFrame(
+            expectedFrameStreamId,
+            event.data
+        );
+
+        expectedFrameStreamId = null;
     }
 };
 
