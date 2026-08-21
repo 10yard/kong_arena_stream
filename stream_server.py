@@ -65,11 +65,11 @@ async def client_stream(websocket: WebSocket):
         if stream_id and stream_id in streams:
             print(f"Stream ended: {stream_id}")
 
-            # Tell viewers explicitly that this stream has ended before
-            # removing it from the active stream list.
-            await broadcast_stream_end(stream_id)
-
+            # Remove it from the authoritative state first.
             streams.pop(stream_id, None)
+
+            # Then explicitly tell viewers and send the updated list.
+            await broadcast_stream_end(stream_id)
             await broadcast_stream_list()
 
 
@@ -153,34 +153,39 @@ async def broadcast_stream_end(stream_id):
 
 
 async def broadcast_frame(stream_id, frame):
-    # Take a snapshot of the viewers first. This prevents a slow viewer
-    # from holding up delivery to every other viewer.
-    targets = [
-        viewer
-        for viewer, subscriptions in list(viewers.items())
-        if stream_id in subscriptions
-    ]
+    dead = []
 
-    async def send_frame(viewer):
-        # Keep the control message and its frame together for this viewer.
-        await viewer.send_text(json.dumps({
-            "type": "frame",
-            "stream_id": stream_id,
-        }))
-        await viewer.send_bytes(frame)
+    for viewer, subscriptions in list(viewers.items()):
+        try:
+            if stream_id not in subscriptions:
+                continue
 
-    results = await asyncio.gather(
-        *(
-            send_frame(viewer)
-            for viewer in targets
-        ),
-        return_exceptions=True,
-    )
+            await viewer.send_text(json.dumps({
+                "type": "frame",
+                "stream_id": stream_id,
+            }))
 
-    # Remove only viewers whose send failed.
-    for viewer, result in zip(targets, results):
-        if isinstance(result, Exception):
-            viewers.pop(viewer, None)
+            await viewer.send_bytes(frame)
+
+        except Exception:
+            dead.append(viewer)
+
+    for viewer in dead:
+        viewers.pop(viewer, None)
+
+
+@app.get("/api/streams")
+async def get_streams():
+    return {
+        "streams": [
+            {
+                "stream_id": stream_id,
+                "username": stream["username"],
+                "game": stream["game"],
+            }
+            for stream_id, stream in streams.items()
+        ]
+    }
 
 
 @app.get("/")
@@ -432,13 +437,9 @@ select,
                 </label>
 
                 <select id="max-streams">
-                    <option value="1">1</option>
-                    <option value="2">2</option>
-                    <option value="3">3</option>
-                    <option value="4" selected>4</option>
-                    <option value="6">6</option>
+                    <option value="2" selected>2</option>
+                    <option value="4">4</option>
                     <option value="8">8</option>
-                    <option value="10">10</option>
                 </select>
             </div>
 
@@ -479,13 +480,9 @@ const backButton =
     document.getElementById("back-button");
 
 const MAX_OPTIONS = {
-    1:  [1, 1],
-    2:  [2, 1],
-    3:  [3, 1],
-    4:  [2, 2],
-    6:  [3, 2],
-    8:  [4, 2],
-    10: [5, 2],
+    2: [2, 1],
+    4: [2, 2],
+    8: [4, 2],
 };
 
 let allStreams = [];
@@ -523,6 +520,42 @@ function getFilteredStreams() {
 
         return true;
     });
+}
+
+
+function reconcileActiveStreams() {
+    const activeStreamIds = new Set(
+        allStreams.map(
+            stream => stream.stream_id
+        )
+    );
+
+    for (
+        const streamId
+        of Array.from(
+            streamTiles.keys()
+        )
+    ) {
+        if (
+            !activeStreamIds.has(
+                streamId
+            )
+        ) {
+            removeTile(streamId);
+        }
+    }
+
+    selectedStreamIds =
+        selectedStreamIds.filter(
+            streamId =>
+                activeStreamIds.has(
+                    streamId
+                )
+        );
+
+    updateTournamentOptions();
+    updatePlayerOptions();
+    updateStreams();
 }
 
 
@@ -859,62 +892,25 @@ function updateStreams() {
 }
 
 
-// Keep only the newest frame for each stream. If decoding/rendering
-// briefly falls behind, older frames are discarded rather than queued.
-const pendingFrames = new Map();
-let renderScheduled = false;
-
 function updateFrame(streamId, blob) {
-    pendingFrames.set(streamId, blob);
+    const tile =
+        streamTiles.get(streamId);
 
-    if (!renderScheduled) {
-        renderScheduled = true;
-        requestAnimationFrame(renderPendingFrames);
-    }
-}
-
-function renderPendingFrames() {
-    renderScheduled = false;
-
-    // Take a snapshot so frames that arrive during this render cycle
-    // are left pending for the next animation frame.
-    const framesToRender =
-        new Map(pendingFrames);
-
-    pendingFrames.clear();
-
-    for (
-        const [streamId, blob]
-        of framesToRender
-    ) {
-        const tile =
-            streamTiles.get(streamId);
-
-        if (!tile) {
-            continue;
-        }
-
-        const url =
-            URL.createObjectURL(blob);
-
-        const oldUrl =
-            tile.image.dataset.url;
-
-        tile.image.src = url;
-        tile.image.dataset.url = url;
-
-        if (oldUrl) {
-            URL.revokeObjectURL(oldUrl);
-        }
+    if (!tile) {
+        return;
     }
 
-    // If newer frames arrived while rendering, schedule one more
-    // browser paint cycle and again use only the latest frame.
-    if (pendingFrames.size > 0) {
-        renderScheduled = true;
-        requestAnimationFrame(
-            renderPendingFrames
-        );
+    const url =
+        URL.createObjectURL(blob);
+
+    const oldUrl =
+        tile.image.dataset.url;
+
+    tile.image.src = url;
+    tile.image.dataset.url = url;
+
+    if (oldUrl) {
+        URL.revokeObjectURL(oldUrl);
     }
 }
 
@@ -959,41 +955,7 @@ ws.onmessage = function(event) {
 
         if (data.type === "streams") {
             allStreams = data.streams;
-
-            // The stream list is the authoritative state. Remove any
-            // screen immediately if its stream is no longer active.
-            const activeStreamIds = new Set(
-                allStreams.map(
-                    stream => stream.stream_id
-                )
-            );
-
-            for (
-                const streamId
-                of Array.from(
-                    streamTiles.keys()
-                )
-            ) {
-                if (
-                    !activeStreamIds.has(
-                        streamId
-                    )
-                ) {
-                    removeTile(streamId);
-                }
-            }
-
-            selectedStreamIds =
-                selectedStreamIds.filter(
-                    streamId =>
-                        activeStreamIds.has(
-                            streamId
-                        )
-                );
-
-            updateTournamentOptions();
-            updatePlayerOptions();
-            updateStreams();
+            reconcileActiveStreams();
         }
 
         else if (data.type === "stream_end") {
@@ -1040,6 +1002,37 @@ ws.onmessage = function(event) {
         expectedFrameStreamId = null;
     }
 };
+
+
+async function pollActiveStreams() {
+    try {
+        const response =
+            await fetch("/api/streams", {
+                cache: "no-store"
+            });
+
+        if (!response.ok) {
+            return;
+        }
+
+        const data =
+            await response.json();
+
+        allStreams = data.streams || [];
+        reconcileActiveStreams();
+    } catch (error) {
+        // WebSocket updates remain the primary mechanism.
+        // Polling is only a safety net for missed end events.
+    }
+}
+
+
+// Safety net: guarantees ended streams are removed even if a control
+// WebSocket message is missed or delayed.
+setInterval(
+    pollActiveStreams,
+    1000
+);
 
 
 ws.onopen = function() {
