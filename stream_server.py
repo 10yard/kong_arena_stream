@@ -868,15 +868,21 @@ const frameQueues = new Map();
 const framePlaying = new Set();
 
 async function decodeFrameBatch(data) {
-    const compressed = new Uint8Array(await data.arrayBuffer());
-    const stream = new Blob([compressed]).stream()
-        .pipeThrough(new DecompressionStream("deflate"));
+    // RAW TEST VERSION:
+    // The client sends the length-prefixed PNG batch directly. This removes
+    // browser decompression from the equation so we can verify the playback
+    // protocol independently of DecompressionStream support.
     const bytes = new Uint8Array(
-        await new Response(stream).arrayBuffer()
+        await data.arrayBuffer()
     );
+
     const view = new DataView(
         bytes.buffer, bytes.byteOffset, bytes.byteLength
     );
+
+    if (bytes.length < 4) {
+        throw new Error("Invalid frame batch: too short");
+    }
     let offset = 0;
     const count = view.getUint32(offset, false);
     offset += 4;
@@ -910,7 +916,7 @@ async function updateFrame(streamId, batchBlob) {
             playQueuedFrames(streamId);
         }
     } catch (error) {
-        console.error("Frame batch decode failed:", error);
+        console.error("Frame batch decode failed:", error, batchBlob);
     }
 }
 
