@@ -859,79 +859,89 @@ function updateStreams() {
 }
 
 
-// Each stream is sent as a 2-second animated GIF. Queue GIF batches
-// so the browser can play them continuously rather than replacing the image
-// every source frame.
-const GIF_BATCH_MS = 2000;
+// Each stream is sent as one compressed batch containing complete PNG frames.
+// The browser buffers them and plays frames continuously at STREAM_FPS.
+const STREAM_FPS = 15;
+const FRAME_INTERVAL_MS = 1000 / STREAM_FPS;
+const MIN_START_BUFFER = 15;
+const frameQueues = new Map();
+const framePlaying = new Set();
 
-// Must match StreamClient:
-// overlap = 0.2 seconds = 3 frames at 15 FPS.
-// Switch after the unique part of the GIF and let the next GIF replay
-// only the overlapping tail.
-const GIF_OVERLAP_MS = 200;
-const GIF_SWITCH_MS =
-    GIF_BATCH_MS - GIF_OVERLAP_MS;
+async function decodeFrameBatch(data) {
+    const compressed = new Uint8Array(await data.arrayBuffer());
+    const stream = new Blob([compressed]).stream()
+        .pipeThrough(new DecompressionStream("deflate"));
+    const bytes = new Uint8Array(
+        await new Response(stream).arrayBuffer()
+    );
+    const view = new DataView(
+        bytes.buffer, bytes.byteOffset, bytes.byteLength
+    );
+    let offset = 0;
+    const count = view.getUint32(offset, false);
+    offset += 4;
+    const frames = [];
 
-const gifQueues = new Map();
-const gifPlaying = new Set();
-
-function updateFrame(streamId, blob) {
-    if (!gifQueues.has(streamId)) {
-        gifQueues.set(streamId, []);
+    for (let i = 0; i < count; i++) {
+        const length = view.getUint32(offset, false);
+        offset += 4;
+        if (length < 1 || offset + length > bytes.length) {
+            throw new Error("Invalid frame batch");
+        }
+        frames.push(new Blob(
+            [bytes.slice(offset, offset + length)],
+            { type: "image/png" }
+        ));
+        offset += length;
     }
+    return frames;
+}
 
-    gifQueues.get(streamId).push(blob);
+async function updateFrame(streamId, batchBlob) {
+    try {
+        const frames = await decodeFrameBatch(batchBlob);
+        if (!frameQueues.has(streamId)) {
+            frameQueues.set(streamId, []);
+        }
+        frameQueues.get(streamId).push(...frames);
 
-    if (!gifPlaying.has(streamId)) {
-        playNextGif(streamId);
+        if (!framePlaying.has(streamId) &&
+            frameQueues.get(streamId).length >= MIN_START_BUFFER) {
+            playQueuedFrames(streamId);
+        }
+    } catch (error) {
+        console.error("Frame batch decode failed:", error);
     }
 }
 
-function playNextGif(streamId) {
-    const queue = gifQueues.get(streamId);
+function playQueuedFrames(streamId) {
+    const queue = frameQueues.get(streamId);
     const tile = streamTiles.get(streamId);
-
-    if (!queue || !tile || queue.length === 0) {
-        gifPlaying.delete(streamId);
+    if (!queue || !tile) {
+        framePlaying.delete(streamId);
         return;
     }
 
     const blob = queue.shift();
+    if (!blob) {
+        framePlaying.delete(streamId);
+        return;
+    }
+
     const url = URL.createObjectURL(blob);
     const oldUrl = tile.image.dataset.url;
-
     tile.image.src = url;
     tile.image.dataset.url = url;
 
-    // Keep the new GIF alive for its complete playback. The previous GIF
-    // can be released as soon as the browser has switched sources.
     if (oldUrl) {
         URL.revokeObjectURL(oldUrl);
     }
 
-    gifPlaying.add(streamId);
-
-    // Schedule against the intended boundary rather than simply
-    // chaining fixed delays. This reduces timer drift between batches.
-    const switchAt =
-        performance.now() + GIF_SWITCH_MS;
-
-    function switchWhenDue() {
-        const remaining =
-            switchAt - performance.now();
-
-        if (remaining <= 0) {
-            playNextGif(streamId);
-            return;
-        }
-
-        setTimeout(
-            switchWhenDue,
-            Math.min(remaining, 25)
-        );
-    }
-
-    switchWhenDue();
+    framePlaying.add(streamId);
+    setTimeout(
+        () => playQueuedFrames(streamId),
+        FRAME_INTERVAL_MS
+    );
 }
 
 
@@ -1050,10 +1060,7 @@ ws.onmessage = function(event) {
     else if (expectedFrameStreamId) {
         updateFrame(
             expectedFrameStreamId,
-            new Blob(
-                [event.data],
-                { type: "image/gif" }
-            )
+            event.data
         );
 
         expectedFrameStreamId = null;
