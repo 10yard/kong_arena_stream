@@ -1,5 +1,6 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
+import asyncio
 import json
 import time
 
@@ -10,6 +11,14 @@ streams = {}
 
 # WebSocket -> set of subscribed stream IDs
 viewers = {}
+
+# Per viewer state:
+#   pending: one latest frame per stream
+#   event: wakes the sender when any stream has a new frame
+# A stream can therefore replace only its own pending frame.
+viewer_frame_pending = {}
+viewer_frame_events = {}
+viewer_frame_tasks = {}
 
 
 @app.websocket("/ws/client")
@@ -77,7 +86,8 @@ async def client_stream(websocket: WebSocket):
 async def viewer_stream(websocket: WebSocket):
     await websocket.accept()
     viewers[websocket] = set()
-    viewer_frame_queues[websocket] = asyncio.Queue(maxsize=1)
+    viewer_frame_pending[websocket] = {}
+    viewer_frame_events[websocket] = asyncio.Event()
     viewer_frame_tasks[websocket] = asyncio.create_task(
         viewer_frame_sender(websocket)
     )
@@ -97,14 +107,13 @@ async def viewer_stream(websocket: WebSocket):
                 subscriptions = set(data.get("streams", []))
                 viewers[websocket] = subscriptions
 
-                # Discard frames queued for the previous subscription set.
-                queue = viewer_frame_queues.get(websocket)
-                if queue:
-                    while not queue.empty():
-                        try:
-                            queue.get_nowait()
-                        except asyncio.QueueEmpty:
-                            break
+                # Remove pending frames that no longer belong to the
+                # new subscription set.
+                pending = viewer_frame_pending.get(websocket)
+                if pending is not None:
+                    for pending_stream_id in list(pending):
+                        if pending_stream_id not in subscriptions:
+                            pending.pop(pending_stream_id, None)
 
                 # Queue the latest frame immediately after subscribing.
                 # Do not wait for socket transmission here.
@@ -126,7 +135,8 @@ async def viewer_stream(websocket: WebSocket):
 
     finally:
         viewers.pop(websocket, None)
-        viewer_frame_queues.pop(websocket, None)
+        viewer_frame_pending.pop(websocket, None)
+        viewer_frame_events.pop(websocket, None)
 
         task = viewer_frame_tasks.pop(websocket, None)
         if task:
@@ -134,54 +144,56 @@ async def viewer_stream(websocket: WebSocket):
 
 
 def queue_latest_frame(websocket, stream_id, frame):
-    """Queue only the newest frame for a viewer without waiting."""
-    queue = viewer_frame_queues.get(websocket)
+    """Keep only the newest pending frame for this specific stream."""
+    pending = viewer_frame_pending.get(websocket)
+    event = viewer_frame_events.get(websocket)
 
-    if not queue:
+    if pending is None or event is None:
         return
 
-    if queue.full():
-        try:
-            queue.get_nowait()
-        except asyncio.QueueEmpty:
-            pass
-
-    try:
-        queue.put_nowait((stream_id, frame))
-    except asyncio.QueueFull:
-        pass
+    pending[stream_id] = frame
+    event.set()
 
 
 async def viewer_frame_sender(websocket):
-    """Send queued frames independently of the streamer receive loop."""
-    queue = viewer_frame_queues.get(websocket)
-
-    if not queue:
-        return
-
+    """Send latest frames independently of the streamer receive loop."""
     try:
         while True:
-            stream_id, frame = await queue.get()
+            event = viewer_frame_events.get(websocket)
+            pending = viewer_frame_pending.get(websocket)
 
-            # The subscription may have changed while this frame was queued.
-            if stream_id not in viewers.get(websocket, set()):
-                continue
+            if event is None or pending is None:
+                return
 
-            await websocket.send_text(json.dumps({
-                "type": "frame",
-                "stream_id": stream_id,
-            }))
-            await websocket.send_bytes(frame)
+            await event.wait()
+
+            # Send each currently pending stream once. Any frame arriving
+            # while a send is in progress replaces only that stream's next
+            # pending frame, so different streams never overwrite each other.
+            event.clear()
+
+            while pending:
+                stream_id, frame = pending.popitem()
+
+                # The subscription may have changed while this frame was pending.
+                if stream_id not in viewers.get(websocket, set()):
+                    continue
+
+                await websocket.send_text(json.dumps({
+                    "type": "frame",
+                    "stream_id": stream_id,
+                }))
+                await websocket.send_bytes(frame)
 
     except asyncio.CancelledError:
         pass
 
     except Exception:
-        # Let the normal viewer cleanup path remove the socket.
         pass
 
     finally:
-        viewer_frame_queues.pop(websocket, None)
+        viewer_frame_pending.pop(websocket, None)
+        viewer_frame_events.pop(websocket, None)
         viewers.pop(websocket, None)
 
 
