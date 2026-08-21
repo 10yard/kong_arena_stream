@@ -859,63 +859,53 @@ function updateStreams() {
 }
 
 
-// Keep only the newest frame for each stream. If decoding/rendering
-// briefly falls behind, older frames are discarded rather than queued.
-const pendingFrames = new Map();
-let renderScheduled = false;
+// Each stream is sent as a 2-second animated GIF. Queue GIF batches
+// so the browser can play them continuously rather than replacing the image
+// every source frame.
+const GIF_BATCH_MS = 2000;
+const gifQueues = new Map();
+const gifPlaying = new Set();
 
 function updateFrame(streamId, blob) {
-    pendingFrames.set(streamId, blob);
+    if (!gifQueues.has(streamId)) {
+        gifQueues.set(streamId, []);
+    }
 
-    if (!renderScheduled) {
-        renderScheduled = true;
-        requestAnimationFrame(renderPendingFrames);
+    gifQueues.get(streamId).push(blob);
+
+    if (!gifPlaying.has(streamId)) {
+        playNextGif(streamId);
     }
 }
 
-function renderPendingFrames() {
-    renderScheduled = false;
+function playNextGif(streamId) {
+    const queue = gifQueues.get(streamId);
+    const tile = streamTiles.get(streamId);
 
-    // Take a snapshot so frames that arrive during this render cycle
-    // are left pending for the next animation frame.
-    const framesToRender =
-        new Map(pendingFrames);
-
-    pendingFrames.clear();
-
-    for (
-        const [streamId, blob]
-        of framesToRender
-    ) {
-        const tile =
-            streamTiles.get(streamId);
-
-        if (!tile) {
-            continue;
-        }
-
-        const url =
-            URL.createObjectURL(blob);
-
-        const oldUrl =
-            tile.image.dataset.url;
-
-        tile.image.src = url;
-        tile.image.dataset.url = url;
-
-        if (oldUrl) {
-            URL.revokeObjectURL(oldUrl);
-        }
+    if (!queue || !tile || queue.length === 0) {
+        gifPlaying.delete(streamId);
+        return;
     }
 
-    // If newer frames arrived while rendering, schedule one more
-    // browser paint cycle and again use only the latest frame.
-    if (pendingFrames.size > 0) {
-        renderScheduled = true;
-        requestAnimationFrame(
-            renderPendingFrames
-        );
+    const blob = queue.shift();
+    const url = URL.createObjectURL(blob);
+    const oldUrl = tile.image.dataset.url;
+
+    tile.image.src = url;
+    tile.image.dataset.url = url;
+
+    // Keep the new GIF alive for its complete playback. The previous GIF
+    // can be released as soon as the browser has switched sources.
+    if (oldUrl) {
+        URL.revokeObjectURL(oldUrl);
     }
+
+    gifPlaying.add(streamId);
+
+    setTimeout(
+        () => playNextGif(streamId),
+        GIF_BATCH_MS
+    );
 }
 
 
@@ -1034,7 +1024,10 @@ ws.onmessage = function(event) {
     else if (expectedFrameStreamId) {
         updateFrame(
             expectedFrameStreamId,
-            event.data
+            new Blob(
+                [event.data],
+                { type: "image/gif" }
+            )
         );
 
         expectedFrameStreamId = null;
