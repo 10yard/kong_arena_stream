@@ -211,6 +211,22 @@ body {
     overflow: hidden;
 }
 
+#stream-debug {
+    position: fixed;
+    right: 8px;
+    bottom: 8px;
+    z-index: 9999;
+    min-width: 290px;
+    padding: 8px 10px;
+    background: rgba(0,0,0,.88);
+    border: 1px solid #666;
+    border-radius: 4px;
+    color: #7f7;
+    font: 12px/1.45 monospace;
+    white-space: pre-line;
+    pointer-events: none;
+}
+
 #page {
     display: flex;
     flex-direction: column;
@@ -452,6 +468,7 @@ select,
     </div>
 
 </div>
+<div id="stream-debug">Initialising diagnostics...</div>
 
 <script>
 const protocol =
@@ -492,6 +509,41 @@ let allStreams = [];
 let selectedStreamIds = [];
 let streamTiles = new Map();
 let expectedFrameStreamId = null;
+
+const debugElement = document.getElementById("stream-debug");
+
+const debugStats = {
+    binaryMessages: 0,
+    batchesReceived: 0,
+    batchesDecoded: 0,
+    framesDecoded: 0,
+    framesDisplayed: 0,
+    errors: 0,
+    lastBatchBytes: 0,
+    lastError: "",
+    lastStream: "",
+};
+
+function updateDebug() {
+    debugElement.textContent =
+        "RAW PNG BATCH DIAGNOSTICS\n" +
+        "Binary messages: " + debugStats.binaryMessages + "\n" +
+        "Batches received: " + debugStats.batchesReceived + "\n" +
+        "Batches decoded: " + debugStats.batchesDecoded + "\n" +
+        "Frames decoded: " + debugStats.framesDecoded + "\n" +
+        "Frames displayed: " + debugStats.framesDisplayed + "\n" +
+        "Last batch bytes: " + debugStats.lastBatchBytes + "\n" +
+        "Queue: " +
+        Array.from(frameQueues.values())
+            .reduce((total, queue) => total + queue.length, 0) + "\n" +
+        "Last stream: " + (debugStats.lastStream || "-") + "\n" +
+        "Errors: " + debugStats.errors +
+        (debugStats.lastError
+            ? "\nERROR: " + debugStats.lastError
+            : "");
+}
+
+setInterval(updateDebug, 250);
 
 
 function getMaxStreams() {
@@ -905,18 +957,47 @@ async function decodeFrameBatch(data) {
 
 async function updateFrame(streamId, batchBlob) {
     try {
+        console.log(
+            "[Batch] received",
+            streamId,
+            batchBlob.size,
+            "bytes"
+        );
+
         const frames = await decodeFrameBatch(batchBlob);
+
+        debugStats.batchesDecoded++;
+        debugStats.framesDecoded += frames.length;
+
+        console.log(
+            "[Batch] decoded",
+            frames.length,
+            "frames"
+        );
+
         if (!frameQueues.has(streamId)) {
             frameQueues.set(streamId, []);
         }
+
         frameQueues.get(streamId).push(...frames);
 
         if (!framePlaying.has(streamId) &&
             frameQueues.get(streamId).length >= MIN_START_BUFFER) {
+            console.log("[Batch] starting playback");
             playQueuedFrames(streamId);
         }
     } catch (error) {
-        console.error("Frame batch decode failed:", error, batchBlob);
+        debugStats.errors++;
+        debugStats.lastError =
+            error && error.message
+                ? error.message
+                : String(error);
+
+        console.error(
+            "Frame batch decode failed:",
+            error,
+            batchBlob
+        );
     }
 }
 
@@ -938,6 +1019,7 @@ function playQueuedFrames(streamId) {
     const oldUrl = tile.image.dataset.url;
     tile.image.src = url;
     tile.image.dataset.url = url;
+    debugStats.framesDisplayed++;
 
     if (oldUrl) {
         URL.revokeObjectURL(oldUrl);
@@ -1064,6 +1146,13 @@ ws.onmessage = function(event) {
     }
 
     else if (expectedFrameStreamId) {
+        debugStats.binaryMessages++;
+        debugStats.batchesReceived++;
+        debugStats.lastStream =
+            expectedFrameStreamId;
+        debugStats.lastBatchBytes =
+            event.data.size;
+
         updateFrame(
             expectedFrameStreamId,
             event.data
