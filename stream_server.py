@@ -77,6 +77,10 @@ async def client_stream(websocket: WebSocket):
 async def viewer_stream(websocket: WebSocket):
     await websocket.accept()
     viewers[websocket] = set()
+    viewer_frame_queues[websocket] = asyncio.Queue(maxsize=1)
+    viewer_frame_tasks[websocket] = asyncio.create_task(
+        viewer_frame_sender(websocket)
+    )
 
     try:
         while True:
@@ -93,16 +97,26 @@ async def viewer_stream(websocket: WebSocket):
                 subscriptions = set(data.get("streams", []))
                 viewers[websocket] = subscriptions
 
-                # Send the latest frame immediately after subscribing.
+                # Discard frames queued for the previous subscription set.
+                queue = viewer_frame_queues.get(websocket)
+                if queue:
+                    while not queue.empty():
+                        try:
+                            queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+
+                # Queue the latest frame immediately after subscribing.
+                # Do not wait for socket transmission here.
                 for stream_id in subscriptions:
                     stream = streams.get(stream_id)
 
                     if stream and stream["frame"]:
-                        await websocket.send_text(json.dumps({
-                            "type": "frame",
-                            "stream_id": stream_id,
-                        }))
-                        await websocket.send_bytes(stream["frame"])
+                        queue_latest_frame(
+                            websocket,
+                            stream_id,
+                            stream["frame"],
+                        )
 
     except WebSocketDisconnect:
         pass
@@ -111,6 +125,63 @@ async def viewer_stream(websocket: WebSocket):
         print(f"Viewer error: {e}")
 
     finally:
+        viewers.pop(websocket, None)
+        viewer_frame_queues.pop(websocket, None)
+
+        task = viewer_frame_tasks.pop(websocket, None)
+        if task:
+            task.cancel()
+
+
+def queue_latest_frame(websocket, stream_id, frame):
+    """Queue only the newest frame for a viewer without waiting."""
+    queue = viewer_frame_queues.get(websocket)
+
+    if not queue:
+        return
+
+    if queue.full():
+        try:
+            queue.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+
+    try:
+        queue.put_nowait((stream_id, frame))
+    except asyncio.QueueFull:
+        pass
+
+
+async def viewer_frame_sender(websocket):
+    """Send queued frames independently of the streamer receive loop."""
+    queue = viewer_frame_queues.get(websocket)
+
+    if not queue:
+        return
+
+    try:
+        while True:
+            stream_id, frame = await queue.get()
+
+            # The subscription may have changed while this frame was queued.
+            if stream_id not in viewers.get(websocket, set()):
+                continue
+
+            await websocket.send_text(json.dumps({
+                "type": "frame",
+                "stream_id": stream_id,
+            }))
+            await websocket.send_bytes(frame)
+
+    except asyncio.CancelledError:
+        pass
+
+    except Exception:
+        # Let the normal viewer cleanup path remove the socket.
+        pass
+
+    finally:
+        viewer_frame_queues.pop(websocket, None)
         viewers.pop(websocket, None)
 
 
@@ -178,34 +249,11 @@ async def broadcast_stream_end(stream_id):
 
 
 async def broadcast_frame(stream_id, frame):
-    # Take a snapshot of the viewers first. This prevents a slow viewer
-    # from holding up delivery to every other viewer.
-    targets = [
-        viewer
-        for viewer, subscriptions in list(viewers.items())
-        if stream_id in subscriptions
-    ]
-
-    async def send_frame(viewer):
-        # Keep the control message and its frame together for this viewer.
-        await viewer.send_text(json.dumps({
-            "type": "frame",
-            "stream_id": stream_id,
-        }))
-        await viewer.send_bytes(frame)
-
-    results = await asyncio.gather(
-        *(
-            send_frame(viewer)
-            for viewer in targets
-        ),
-        return_exceptions=True,
-    )
-
-    # Remove only viewers whose send failed.
-    for viewer, result in zip(targets, results):
-        if isinstance(result, Exception):
-            viewers.pop(viewer, None)
+    # Queue the frame and return immediately. A slow viewer never blocks
+    # the streamer or other viewers, and each viewer keeps only one frame.
+    for viewer, subscriptions in list(viewers.items()):
+        if stream_id in subscriptions:
+            queue_latest_frame(viewer, stream_id, frame)
 
 
 @app.get("/")
