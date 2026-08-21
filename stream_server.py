@@ -153,25 +153,34 @@ async def broadcast_stream_end(stream_id):
 
 
 async def broadcast_frame(stream_id, frame):
-    dead = []
+    # Take a snapshot of the viewers first. This prevents a slow viewer
+    # from holding up delivery to every other viewer.
+    targets = [
+        viewer
+        for viewer, subscriptions in list(viewers.items())
+        if stream_id in subscriptions
+    ]
 
-    for viewer, subscriptions in list(viewers.items()):
-        try:
-            if stream_id not in subscriptions:
-                continue
+    async def send_frame(viewer):
+        # Keep the control message and its frame together for this viewer.
+        await viewer.send_text(json.dumps({
+            "type": "frame",
+            "stream_id": stream_id,
+        }))
+        await viewer.send_bytes(frame)
 
-            await viewer.send_text(json.dumps({
-                "type": "frame",
-                "stream_id": stream_id,
-            }))
+    results = await asyncio.gather(
+        *(
+            send_frame(viewer)
+            for viewer in targets
+        ),
+        return_exceptions=True,
+    )
 
-            await viewer.send_bytes(frame)
-
-        except Exception:
-            dead.append(viewer)
-
-    for viewer in dead:
-        viewers.pop(viewer, None)
+    # Remove only viewers whose send failed.
+    for viewer, result in zip(targets, results):
+        if isinstance(result, Exception):
+            viewers.pop(viewer, None)
 
 
 @app.get("/")
@@ -850,8 +859,8 @@ function updateStreams() {
 }
 
 
-// Keep only the newest frame for each stream. If the browser briefly
-// falls behind, obsolete frames are replaced rather than displayed later.
+// Keep only the newest frame for each stream. If decoding/rendering
+// briefly falls behind, older frames are discarded rather than queued.
 const pendingFrames = new Map();
 let renderScheduled = false;
 
@@ -867,7 +876,8 @@ function updateFrame(streamId, blob) {
 function renderPendingFrames() {
     renderScheduled = false;
 
-    // Take the newest frame for each stream and discard anything older.
+    // Take a snapshot so frames that arrive during this render cycle
+    // are left pending for the next animation frame.
     const framesToRender =
         new Map(pendingFrames);
 
@@ -898,7 +908,8 @@ function renderPendingFrames() {
         }
     }
 
-    // A newer frame may have arrived while rendering.
+    // If newer frames arrived while rendering, schedule one more
+    // browser paint cycle and again use only the latest frame.
     if (pendingFrames.size > 0) {
         renderScheduled = true;
         requestAnimationFrame(
