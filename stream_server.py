@@ -84,6 +84,10 @@ async def viewer_stream(websocket: WebSocket):
 
             if data.get("type") == "get_streams":
                 await send_stream_list(websocket)
+                await websocket.send_text(json.dumps({
+                    "type": "stream_count",
+                    "count": len(streams),
+                }))
 
             elif data.get("type") == "subscribe":
                 subscriptions = set(data.get("streams", []))
@@ -130,6 +134,26 @@ async def broadcast_stream_list():
     for viewer in list(viewers):
         try:
             await send_stream_list(viewer)
+        except Exception:
+            dead.append(viewer)
+
+    for viewer in dead:
+        viewers.pop(viewer, None)
+
+    await broadcast_stream_count()
+
+
+async def broadcast_stream_count():
+    message = json.dumps({
+        "type": "stream_count",
+        "count": len(streams),
+    })
+
+    dead = []
+
+    for viewer in list(viewers):
+        try:
+            await viewer.send_text(message)
         except Exception:
             dead.append(viewer)
 
@@ -493,6 +517,7 @@ let allStreams = [];
 let selectedStreamIds = [];
 let streamTiles = new Map();
 let expectedFrameStreamId = null;
+let liveStreamCount = 0;
 
 
 function getMaxStreams() {
@@ -995,6 +1020,14 @@ ws.onmessage = function(event) {
             updateTournamentOptions();
             updatePlayerOptions();
             updateStreams();
+        }
+
+        else if (data.type === "stream_count") {
+            liveStreamCount = Number(data.count) || 0;
+            console.log(
+                "Live streams:",
+                liveStreamCount
+            );
         }
 
         else if (data.type === "stream_end") {
