@@ -1,6 +1,5 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
-import asyncio
 import json
 import time
 
@@ -11,14 +10,6 @@ streams = {}
 
 # WebSocket -> set of subscribed stream IDs
 viewers = {}
-
-# Per viewer state:
-#   pending: one latest frame per stream
-#   event: wakes the sender when any stream has a new frame
-# A stream can therefore replace only its own pending frame.
-viewer_frame_pending = {}
-viewer_frame_events = {}
-viewer_frame_tasks = {}
 
 
 @app.websocket("/ws/client")
@@ -86,46 +77,27 @@ async def client_stream(websocket: WebSocket):
 async def viewer_stream(websocket: WebSocket):
     await websocket.accept()
     viewers[websocket] = set()
-    viewer_frame_pending[websocket] = {}
-    viewer_frame_events[websocket] = asyncio.Event()
-    viewer_frame_tasks[websocket] = asyncio.create_task(
-        viewer_frame_sender(websocket)
-    )
 
     try:
+        await send_stream_list(websocket)
+
         while True:
             data = json.loads(await websocket.receive_text())
 
-            if data.get("type") == "get_streams":
-                await send_stream_list(websocket)
-                await websocket.send_text(json.dumps({
-                    "type": "stream_count",
-                    "count": len(streams),
-                }))
-
-            elif data.get("type") == "subscribe":
+            if data.get("type") == "subscribe":
                 subscriptions = set(data.get("streams", []))
                 viewers[websocket] = subscriptions
 
-                # Remove pending frames that no longer belong to the
-                # new subscription set.
-                pending = viewer_frame_pending.get(websocket)
-                if pending is not None:
-                    for pending_stream_id in list(pending):
-                        if pending_stream_id not in subscriptions:
-                            pending.pop(pending_stream_id, None)
-
-                # Queue the latest frame immediately after subscribing.
-                # Do not wait for socket transmission here.
+                # Send the latest frame immediately after subscribing.
                 for stream_id in subscriptions:
                     stream = streams.get(stream_id)
 
                     if stream and stream["frame"]:
-                        queue_latest_frame(
-                            websocket,
-                            stream_id,
-                            stream["frame"],
-                        )
+                        await websocket.send_text(json.dumps({
+                            "type": "frame",
+                            "stream_id": stream_id,
+                        }))
+                        await websocket.send_bytes(stream["frame"])
 
     except WebSocketDisconnect:
         pass
@@ -134,66 +106,6 @@ async def viewer_stream(websocket: WebSocket):
         print(f"Viewer error: {e}")
 
     finally:
-        viewers.pop(websocket, None)
-        viewer_frame_pending.pop(websocket, None)
-        viewer_frame_events.pop(websocket, None)
-
-        task = viewer_frame_tasks.pop(websocket, None)
-        if task:
-            task.cancel()
-
-
-def queue_latest_frame(websocket, stream_id, frame):
-    """Keep only the newest pending frame for this specific stream."""
-    pending = viewer_frame_pending.get(websocket)
-    event = viewer_frame_events.get(websocket)
-
-    if pending is None or event is None:
-        return
-
-    pending[stream_id] = frame
-    event.set()
-
-
-async def viewer_frame_sender(websocket):
-    """Send latest frames independently of the streamer receive loop."""
-    try:
-        while True:
-            event = viewer_frame_events.get(websocket)
-            pending = viewer_frame_pending.get(websocket)
-
-            if event is None or pending is None:
-                return
-
-            await event.wait()
-
-            # Send each currently pending stream once. Any frame arriving
-            # while a send is in progress replaces only that stream's next
-            # pending frame, so different streams never overwrite each other.
-            event.clear()
-
-            while pending:
-                stream_id, frame = pending.popitem()
-
-                # The subscription may have changed while this frame was pending.
-                if stream_id not in viewers.get(websocket, set()):
-                    continue
-
-                await websocket.send_text(json.dumps({
-                    "type": "frame",
-                    "stream_id": stream_id,
-                }))
-                await websocket.send_bytes(frame)
-
-    except asyncio.CancelledError:
-        pass
-
-    except Exception:
-        pass
-
-    finally:
-        viewer_frame_pending.pop(websocket, None)
-        viewer_frame_events.pop(websocket, None)
         viewers.pop(websocket, None)
 
 
@@ -223,26 +135,6 @@ async def broadcast_stream_list():
     for viewer in dead:
         viewers.pop(viewer, None)
 
-    await broadcast_stream_count()
-
-
-async def broadcast_stream_count():
-    message = json.dumps({
-        "type": "stream_count",
-        "count": len(streams),
-    })
-
-    dead = []
-
-    for viewer in list(viewers):
-        try:
-            await viewer.send_text(message)
-        except Exception:
-            dead.append(viewer)
-
-    for viewer in dead:
-        viewers.pop(viewer, None)
-
 
 async def broadcast_stream_end(stream_id):
     dead = []
@@ -261,11 +153,34 @@ async def broadcast_stream_end(stream_id):
 
 
 async def broadcast_frame(stream_id, frame):
-    # Queue the frame and return immediately. A slow viewer never blocks
-    # the streamer or other viewers, and each viewer keeps only one frame.
-    for viewer, subscriptions in list(viewers.items()):
-        if stream_id in subscriptions:
-            queue_latest_frame(viewer, stream_id, frame)
+    # Take a snapshot of the viewers first. This prevents a slow viewer
+    # from holding up delivery to every other viewer.
+    targets = [
+        viewer
+        for viewer, subscriptions in list(viewers.items())
+        if stream_id in subscriptions
+    ]
+
+    async def send_frame(viewer):
+        # Keep the control message and its frame together for this viewer.
+        await viewer.send_text(json.dumps({
+            "type": "frame",
+            "stream_id": stream_id,
+        }))
+        await viewer.send_bytes(frame)
+
+    results = await asyncio.gather(
+        *(
+            send_frame(viewer)
+            for viewer in targets
+        ),
+        return_exceptions=True,
+    )
+
+    # Remove only viewers whose send failed.
+    for viewer, result in zip(targets, results):
+        if isinstance(result, Exception):
+            viewers.pop(viewer, None)
 
 
 @app.get("/")
@@ -577,7 +492,6 @@ let allStreams = [];
 let selectedStreamIds = [];
 let streamTiles = new Map();
 let expectedFrameStreamId = null;
-let liveStreamCount = 0;
 
 
 function getMaxStreams() {
@@ -945,63 +859,95 @@ function updateStreams() {
 }
 
 
-// Keep only the newest frame for each stream. If decoding/rendering
-// briefly falls behind, older frames are discarded rather than queued.
-const pendingFrames = new Map();
-let renderScheduled = false;
+// Each stream is sent as one compressed batch containing complete PNG frames.
+// The browser buffers them and plays frames continuously at STREAM_FPS.
+const STREAM_FPS = 15;
+const FRAME_INTERVAL_MS = 1000 / STREAM_FPS;
+const MIN_START_BUFFER = 15;
+const frameQueues = new Map();
+const framePlaying = new Set();
 
-function updateFrame(streamId, blob) {
-    pendingFrames.set(streamId, blob);
+async function decodeFrameBatch(data) {
+    // RAW TEST VERSION:
+    // The client sends the length-prefixed PNG batch directly. This removes
+    // browser decompression from the equation so we can verify the playback
+    // protocol independently of DecompressionStream support.
+    const bytes = new Uint8Array(
+        await data.arrayBuffer()
+    );
 
-    if (!renderScheduled) {
-        renderScheduled = true;
-        requestAnimationFrame(renderPendingFrames);
+    const view = new DataView(
+        bytes.buffer, bytes.byteOffset, bytes.byteLength
+    );
+
+    if (bytes.length < 4) {
+        throw new Error("Invalid frame batch: too short");
+    }
+    let offset = 0;
+    const count = view.getUint32(offset, false);
+    offset += 4;
+    const frames = [];
+
+    for (let i = 0; i < count; i++) {
+        const length = view.getUint32(offset, false);
+        offset += 4;
+        if (length < 1 || offset + length > bytes.length) {
+            throw new Error("Invalid frame batch");
+        }
+        frames.push(new Blob(
+            [bytes.slice(offset, offset + length)],
+            { type: "image/png" }
+        ));
+        offset += length;
+    }
+    return frames;
+}
+
+async function updateFrame(streamId, batchBlob) {
+    try {
+        const frames = await decodeFrameBatch(batchBlob);
+        if (!frameQueues.has(streamId)) {
+            frameQueues.set(streamId, []);
+        }
+        frameQueues.get(streamId).push(...frames);
+
+        if (!framePlaying.has(streamId) &&
+            frameQueues.get(streamId).length >= MIN_START_BUFFER) {
+            playQueuedFrames(streamId);
+        }
+    } catch (error) {
+        console.error("Frame batch decode failed:", error, batchBlob);
     }
 }
 
-function renderPendingFrames() {
-    renderScheduled = false;
-
-    // Take a snapshot so frames that arrive during this render cycle
-    // are left pending for the next animation frame.
-    const framesToRender =
-        new Map(pendingFrames);
-
-    pendingFrames.clear();
-
-    for (
-        const [streamId, blob]
-        of framesToRender
-    ) {
-        const tile =
-            streamTiles.get(streamId);
-
-        if (!tile) {
-            continue;
-        }
-
-        const url =
-            URL.createObjectURL(blob);
-
-        const oldUrl =
-            tile.image.dataset.url;
-
-        tile.image.src = url;
-        tile.image.dataset.url = url;
-
-        if (oldUrl) {
-            URL.revokeObjectURL(oldUrl);
-        }
+function playQueuedFrames(streamId) {
+    const queue = frameQueues.get(streamId);
+    const tile = streamTiles.get(streamId);
+    if (!queue || !tile) {
+        framePlaying.delete(streamId);
+        return;
     }
 
-    // If newer frames arrived while rendering, schedule one more
-    // browser paint cycle and again use only the latest frame.
-    if (pendingFrames.size > 0) {
-        renderScheduled = true;
-        requestAnimationFrame(
-            renderPendingFrames
-        );
+    const blob = queue.shift();
+    if (!blob) {
+        framePlaying.delete(streamId);
+        return;
     }
+
+    const url = URL.createObjectURL(blob);
+    const oldUrl = tile.image.dataset.url;
+    tile.image.src = url;
+    tile.image.dataset.url = url;
+
+    if (oldUrl) {
+        URL.revokeObjectURL(oldUrl);
+    }
+
+    framePlaying.add(streamId);
+    setTimeout(
+        () => playQueuedFrames(streamId),
+        FRAME_INTERVAL_MS
+    );
 }
 
 
@@ -1082,14 +1028,6 @@ ws.onmessage = function(event) {
             updateStreams();
         }
 
-        else if (data.type === "stream_count") {
-            liveStreamCount = Number(data.count) || 0;
-            console.log(
-                "Live streams:",
-                liveStreamCount
-            );
-        }
-
         else if (data.type === "stream_end") {
             const streamId = data.stream_id;
 
@@ -1138,10 +1076,6 @@ ws.onmessage = function(event) {
 
 ws.onopen = function() {
     console.log("Viewer connected");
-
-    ws.send(JSON.stringify({
-        type: "get_streams"
-    }));
 };
 
 
