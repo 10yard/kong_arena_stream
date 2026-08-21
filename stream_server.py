@@ -863,6 +863,15 @@ function updateStreams() {
 // so the browser can play them continuously rather than replacing the image
 // every source frame.
 const GIF_BATCH_MS = 2000;
+
+// Must match StreamClient:
+// overlap = 0.2 seconds = 3 frames at 15 FPS.
+// Switch after the unique part of the GIF and let the next GIF replay
+// only the overlapping tail.
+const GIF_OVERLAP_MS = 200;
+const GIF_SWITCH_MS =
+    GIF_BATCH_MS - GIF_OVERLAP_MS;
+
 const gifQueues = new Map();
 const gifPlaying = new Set();
 
@@ -902,10 +911,27 @@ function playNextGif(streamId) {
 
     gifPlaying.add(streamId);
 
-    setTimeout(
-        () => playNextGif(streamId),
-        GIF_BATCH_MS
-    );
+    // Schedule against the intended boundary rather than simply
+    // chaining fixed delays. This reduces timer drift between batches.
+    const switchAt =
+        performance.now() + GIF_SWITCH_MS;
+
+    function switchWhenDue() {
+        const remaining =
+            switchAt - performance.now();
+
+        if (remaining <= 0) {
+            playNextGif(streamId);
+            return;
+        }
+
+        setTimeout(
+            switchWhenDue,
+            Math.min(remaining, 25)
+        );
+    }
+
+    switchWhenDue();
 }
 
 
