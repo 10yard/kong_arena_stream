@@ -859,25 +859,62 @@ function updateStreams() {
 }
 
 
-function updateFrame(streamId, blob) {
-    const tile =
-        streamTiles.get(streamId);
+// Keep only the newest frame for each stream. If decoding/rendering
+// briefly falls behind, older frames are discarded rather than queued.
+const pendingFrames = new Map();
+let renderScheduled = false;
 
-    if (!tile) {
-        return;
+function updateFrame(streamId, blob) {
+    pendingFrames.set(streamId, blob);
+
+    if (!renderScheduled) {
+        renderScheduled = true;
+        requestAnimationFrame(renderPendingFrames);
+    }
+}
+
+function renderPendingFrames() {
+    renderScheduled = false;
+
+    // Take a snapshot so frames that arrive during this render cycle
+    // are left pending for the next animation frame.
+    const framesToRender =
+        new Map(pendingFrames);
+
+    pendingFrames.clear();
+
+    for (
+        const [streamId, blob]
+        of framesToRender
+    ) {
+        const tile =
+            streamTiles.get(streamId);
+
+        if (!tile) {
+            continue;
+        }
+
+        const url =
+            URL.createObjectURL(blob);
+
+        const oldUrl =
+            tile.image.dataset.url;
+
+        tile.image.src = url;
+        tile.image.dataset.url = url;
+
+        if (oldUrl) {
+            URL.revokeObjectURL(oldUrl);
+        }
     }
 
-    const url =
-        URL.createObjectURL(blob);
-
-    const oldUrl =
-        tile.image.dataset.url;
-
-    tile.image.src = url;
-    tile.image.dataset.url = url;
-
-    if (oldUrl) {
-        URL.revokeObjectURL(oldUrl);
+    // If newer frames arrived while rendering, schedule one more
+    // browser paint cycle and again use only the latest frame.
+    if (pendingFrames.size > 0) {
+        renderScheduled = true;
+        requestAnimationFrame(
+            renderPendingFrames
+        );
     }
 }
 
