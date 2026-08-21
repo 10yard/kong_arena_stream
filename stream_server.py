@@ -1032,10 +1032,13 @@ ws.onmessage = function(event) {
     }
 
     else if (expectedFrameStreamId) {
-        updateFrame(
-            expectedFrameStreamId,
-            event.data
-        );
+		updateFrame(
+			expectedFrameStreamId,
+			new Blob(
+				[event.data],
+				{ type: "image/webp" }
+			)
+		);
 
         expectedFrameStreamId = null;
     }
