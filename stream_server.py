@@ -1,187 +1,91 @@
+import asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
-import json
-import time
+import json, time
 
 app = FastAPI()
-
-# stream_id -> stream information and latest frame
 streams = {}
-
-# WebSocket -> set of subscribed stream IDs
 viewers = {}
-
 
 @app.websocket("/ws/client")
 async def client_stream(websocket: WebSocket):
     await websocket.accept()
     stream_id = None
-
     try:
         metadata = json.loads(await websocket.receive_text())
-
         if metadata.get("type") != "start":
             await websocket.close()
             return
-
         stream_id = metadata["stream_id"]
-
-        streams[stream_id] = {
-            "username": metadata["username"],
-            "game": metadata["game"],
-            "frame": None,
-            "last_frame": time.time(),
-        }
-
-        print(
-            f"Stream started: "
-            f"{metadata['username']} - {metadata['game']}"
-        )
-
-        # Only announce the stream to viewers once it has received
-        # its first frame and is genuinely ready to display.
-        stream_announced = False
-
+        streams[stream_id] = {"username": metadata["username"], "game": metadata["game"], "frame": None, "last_frame": time.time()}
+        print(f"Stream started: {metadata['username']} - {metadata['game']}")
+        await broadcast_stream_list()
         while True:
             frame = await websocket.receive_bytes()
-
             if stream_id in streams:
                 streams[stream_id]["frame"] = frame
                 streams[stream_id]["last_frame"] = time.time()
-
-            if not stream_announced:
-                stream_announced = True
-                await broadcast_stream_list()
-
             await broadcast_frame(stream_id, frame)
-
     except WebSocketDisconnect:
         pass
-
     except Exception as e:
         print(f"Client stream error: {e}")
-
     finally:
         if stream_id and stream_id in streams:
             print(f"Stream ended: {stream_id}")
-
-            # Tell viewers explicitly that this stream has ended before
-            # removing it from the active stream list.
-            await broadcast_stream_end(stream_id)
-
             streams.pop(stream_id, None)
             await broadcast_stream_list()
-
 
 @app.websocket("/ws/viewer")
 async def viewer_stream(websocket: WebSocket):
     await websocket.accept()
     viewers[websocket] = set()
-
     try:
         await send_stream_list(websocket)
-
         while True:
             data = json.loads(await websocket.receive_text())
-
             if data.get("type") == "subscribe":
-                subscriptions = set(data.get("streams", []))
-                viewers[websocket] = subscriptions
-
-                # Send the latest frame immediately after subscribing.
-                for stream_id in subscriptions:
+                viewers[websocket] = set(data.get("streams", []))
+                for stream_id in viewers[websocket]:
                     stream = streams.get(stream_id)
-
                     if stream and stream["frame"]:
-                        await websocket.send_text(json.dumps({
-                            "type": "frame",
-                            "stream_id": stream_id,
-                        }))
+                        await websocket.send_text(json.dumps({"type": "frame", "stream_id": stream_id}))
                         await websocket.send_bytes(stream["frame"])
-
     except WebSocketDisconnect:
         pass
-
     except Exception as e:
         print(f"Viewer error: {e}")
-
     finally:
         viewers.pop(websocket, None)
-
 
 async def send_stream_list(websocket):
     await websocket.send_text(json.dumps({
         "type": "streams",
-        "streams": [
-            {
-                "stream_id": stream_id,
-                "username": stream["username"],
-                "game": stream["game"],
-            }
-            for stream_id, stream in streams.items()
-        ],
+        "streams": [{"stream_id": sid, "username": s["username"], "game": s["game"]} for sid, s in streams.items()]
     }))
-
 
 async def broadcast_stream_list():
     dead = []
-
     for viewer in list(viewers):
         try:
             await send_stream_list(viewer)
         except Exception:
             dead.append(viewer)
-
     for viewer in dead:
         viewers.pop(viewer, None)
-
-
-async def broadcast_stream_end(stream_id):
-    dead = []
-
-    for viewer in list(viewers):
-        try:
-            await viewer.send_text(json.dumps({
-                "type": "stream_end",
-                "stream_id": stream_id,
-            }))
-        except Exception:
-            dead.append(viewer)
-
-    for viewer in dead:
-        viewers.pop(viewer, None)
-
 
 async def broadcast_frame(stream_id, frame):
-    # Take a snapshot of the viewers first. This prevents a slow viewer
-    # from holding up delivery to every other viewer.
-    targets = [
-        viewer
-        for viewer, subscriptions in list(viewers.items())
-        if stream_id in subscriptions
-    ]
-
-    async def send_frame(viewer):
-        # Keep the control message and its frame together for this viewer.
-        await viewer.send_text(json.dumps({
-            "type": "frame",
-            "stream_id": stream_id,
-        }))
-        await viewer.send_bytes(frame)
-
-    results = await asyncio.gather(
-        *(
-            send_frame(viewer)
-            for viewer in targets
-        ),
-        return_exceptions=True,
-    )
-
-    # Remove only viewers whose send failed.
-    for viewer, result in zip(targets, results):
-        if isinstance(result, Exception):
-            viewers.pop(viewer, None)
-
+    dead = []
+    for viewer, subscriptions in list(viewers.items()):
+        try:
+            if stream_id not in subscriptions:
+                continue
+            await viewer.send_text(json.dumps({"type": "frame", "stream_id": stream_id}))
+            await viewer.send_bytes(frame)
+        except Exception:
+            dead.append(viewer)
+    for viewer in dead:
+        viewers.pop(viewer, None)
 
 @app.get("/")
 async def home():
@@ -189,1023 +93,58 @@ async def home():
 <!DOCTYPE html>
 <html>
 <head>
-<meta charset="UTF-8">
 <title>Kong Arena Live Stream</title>
-
 <style>
-* {
-    box-sizing: border-box;
-}
-
-html,
-body {
-    width: 100%;
-    height: 100%;
-    margin: 0;
-}
-
-body {
-    background: #222;
-    color: white;
-    font-family: Arial, sans-serif;
-    overflow: hidden;
-}
-
-#stream-debug {
-    position: fixed;
-    right: 8px;
-    bottom: 8px;
-    z-index: 9999;
-    min-width: 290px;
-    padding: 8px 10px;
-    background: rgba(0,0,0,.88);
-    border: 1px solid #666;
-    border-radius: 4px;
-    color: #7f7;
-    font: 12px/1.45 monospace;
-    white-space: pre-line;
-    pointer-events: none;
-}
-
-#page {
-    display: flex;
-    flex-direction: column;
-    width: 100%;
-    height: 100%;
-}
-
-#toolbar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 10px 16px;
-    background: #111;
-    border-bottom: 1px solid #555;
-    flex: 0 0 auto;
-}
-
-#toolbar h1 {
-    margin: 0;
-    font-size: 22px;
-    white-space: nowrap;
-}
-
-#controls {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 12px;
-    flex-wrap: wrap;
-}
-
-.control-group {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    white-space: nowrap;
-}
-
-select,
-#back-button {
-    font-size: 15px;
-    padding: 5px 8px;
-    background: #222;
-    color: white;
-    border: 1px solid #666;
-    border-radius: 5px;
-}
-
-#back-button {
-    cursor: pointer;
-}
-
-#back-button:hover {
-    background: #3a3a3a;
-    border-color: #aaa;
-}
-
-#back-button:active {
-    background: #333;
-}
-
-#streams {
-    flex: 1 1 auto;
-    min-height: 0;
-    display: grid;
-    gap: 10px;
-    padding: 10px;
-    align-content: center;
-    justify-content: center;
-    overflow: auto;
-}
-
-.stream-tile {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-    min-height: 0;
-    background: #111;
-    border: 2px solid #666;
-    border-radius: 10px;
-    padding: 5px;
-    overflow: hidden;
-    cursor: pointer;
-    transition: transform 0.12s ease, border-color 0.12s ease;
-    box-shadow:
-        0 0 0 1px #111,
-        0 4px 14px rgba(0, 0, 0, 0.65);
-}
-
-.stream-tile:hover {
-    background: #3a3a3a;
-    border-color: #aaa;
-    transform: scale(1.01);
-}
-
-.stream-tile:active {
-    background: #466b46;
-    border-color: #9acb9a;
-    transform: scale(0.99);
-}
-
-.stream-tile .stream-name {
-    background: #111;
-}
-
-
-
-.stream-name {
-    flex: 0 0 auto;
-    min-height: 30px;
-    padding: 6px 10px;
-    font-weight: bold;
-    text-align: center;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.stream-image-wrap {
-    flex: 1 1 auto;
-    min-width: 0;
-    min-height: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    overflow: hidden;
-}
-
-.stream-image {
-    display: block;
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-    image-rendering: pixelated;
-    image-rendering: crisp-edges;
-}
-
-#empty-message {
-    grid-column: 1 / -1;
-    align-self: center;
-    justify-self: center;
-    color: #aaa;
-    font-size: 20px;
-}
-
-@media (max-width: 850px) {
-    #toolbar {
-        align-items: flex-start;
-        flex-direction: column;
-    }
-
-    #controls {
-        justify-content: flex-start;
-    }
-}
-
-@media (max-width: 600px) {
-    #toolbar h1 {
-        font-size: 17px;
-    }
-
-    #toolbar {
-        padding: 8px 10px;
-    }
-
-    #controls {
-        gap: 8px;
-    }
-
-    .control-group {
-        gap: 4px;
-    }
-}
+body { background:#222; color:white; font-family:Arial,sans-serif; text-align:center; }
+#game { margin:20px auto; padding:15px; background:#333; width:fit-content; }
+#frame { display:block; width:448px; height:512px; image-rendering:pixelated; image-rendering:crisp-edges; }
+#info { padding:10px; }
 </style>
 </head>
-
 <body>
-
-<div id="page">
-
-    <div id="toolbar">
-        <h1>Kong Arena Live Stream</h1>
-
-        <div id="controls">
-
-            <button
-                id="back-button"
-                type="button"
-                hidden
-            >
-                ← Back to multi-view
-            </button>
-
-            <div class="control-group">
-                <label for="tournament-filter">
-                    Tournament:
-                </label>
-
-                <select id="tournament-filter">
-                    <option value="">All tournaments</option>
-                </select>
-            </div>
-
-            <div class="control-group">
-                <label for="player-filter">
-                    Player:
-                </label>
-
-                <select id="player-filter">
-                    <option value="">All players</option>
-                </select>
-            </div>
-
-            <div class="control-group">
-                <label for="max-streams">
-                    Max streams:
-                </label>
-
-                <select id="max-streams">
-                    <option value="1">1</option>
-                    <option value="2">2</option>
-                    <option value="3">3</option>
-                    <option value="4" selected>4</option>
-                    <option value="6">6</option>
-                    <option value="8">8</option>
-                    <option value="10">10</option>
-                </select>
-            </div>
-
-        </div>
-    </div>
-
-    <div id="streams">
-        <div id="empty-message">
-            Waiting for streams...
-        </div>
-    </div>
-
-</div>
-<div id="stream-debug">Initialising diagnostics...</div>
-
+<h1>Kong Arena Live Stream</h1>
+<div id="game"><div id="info">Waiting for stream...</div><img id="frame"></div>
 <script>
-const protocol =
-    location.protocol === "https:" ? "wss" : "ws";
-
-const ws = new WebSocket(
-    `${protocol}://${location.host}/ws/viewer`
-);
-
+const protocol = location.protocol === "https:" ? "wss" : "ws";
+const ws = new WebSocket(`${protocol}://${location.host}/ws/viewer`);
 ws.binaryType = "blob";
-
-const streamsElement =
-    document.getElementById("streams");
-
-const tournamentFilterElement =
-    document.getElementById("tournament-filter");
-
-const playerFilterElement =
-    document.getElementById("player-filter");
-
-const maxStreamsElement =
-    document.getElementById("max-streams");
-
-const backButton =
-    document.getElementById("back-button");
-
-const MAX_OPTIONS = {
-    1:  [1, 1],
-    2:  [2, 1],
-    3:  [3, 1],
-    4:  [2, 2],
-    6:  [3, 2],
-    8:  [4, 2],
-    10: [5, 2],
-};
-
-let allStreams = [];
-let selectedStreamIds = [];
-let streamTiles = new Map();
-let expectedFrameStreamId = null;
-
-const debugElement = document.getElementById("stream-debug");
-
-const debugStats = {
-    binaryMessages: 0,
-    batchesReceived: 0,
-    batchesDecoded: 0,
-    framesDecoded: 0,
-    framesDisplayed: 0,
-    errors: 0,
-    lastBatchBytes: 0,
-    lastError: "",
-    lastStream: "",
-};
-
-function updateDebug() {
-    debugElement.textContent =
-        "RAW PNG BATCH DIAGNOSTICS\n" +
-        "Binary messages: " + debugStats.binaryMessages + "\n" +
-        "Batches received: " + debugStats.batchesReceived + "\n" +
-        "Batches decoded: " + debugStats.batchesDecoded + "\n" +
-        "Frames decoded: " + debugStats.framesDecoded + "\n" +
-        "Frames displayed: " + debugStats.framesDisplayed + "\n" +
-        "Last batch bytes: " + debugStats.lastBatchBytes + "\n" +
-        "Queue: " +
-        Array.from(frameQueues.values())
-            .reduce((total, queue) => total + queue.length, 0) + "\n" +
-        "Last stream: " + (debugStats.lastStream || "-") + "\n" +
-        "Errors: " + debugStats.errors +
-        (debugStats.lastError
-            ? "\nERROR: " + debugStats.lastError
-            : "");
-}
-
-setInterval(updateDebug, 250);
-
-
-function getMaxStreams() {
-    return Number(maxStreamsElement.value);
-}
-
-
-function getFilteredStreams() {
-    const tournament =
-        tournamentFilterElement.value;
-
-    const player =
-        playerFilterElement.value;
-
-    return allStreams.filter(stream => {
-        if (
-            tournament &&
-            stream.game !== tournament
-        ) {
-            return false;
-        }
-
-        if (
-            player &&
-            stream.stream_id !== player
-        ) {
-            return false;
-        }
-
-        return true;
-    });
-}
-
-
-function updateTournamentOptions() {
-    const previousValue =
-        tournamentFilterElement.value;
-
-    const tournaments = [
-        ...new Set(
-            allStreams
-                .map(stream => stream.game)
-                .filter(Boolean)
-        )
-    ];
-
-    tournamentFilterElement.replaceChildren();
-
-    const allOption =
-        document.createElement("option");
-
-    allOption.value = "";
-    allOption.textContent =
-        "All tournaments";
-
-    tournamentFilterElement.appendChild(allOption);
-
-    for (const tournament of tournaments) {
-        const option =
-            document.createElement("option");
-
-        option.value = tournament;
-        option.textContent = tournament;
-
-        tournamentFilterElement.appendChild(option);
-    }
-
-    if (tournaments.includes(previousValue)) {
-        tournamentFilterElement.value =
-            previousValue;
-    }
-}
-
-
-function updatePlayerOptions() {
-    const previousValue =
-        playerFilterElement.value;
-
-    const tournament =
-        tournamentFilterElement.value;
-
-    const availableStreams =
-        allStreams.filter(stream => {
-            return !tournament ||
-                stream.game === tournament;
-        });
-
-    playerFilterElement.replaceChildren();
-
-    const allOption =
-        document.createElement("option");
-
-    allOption.value = "";
-    allOption.textContent = "All players";
-
-    playerFilterElement.appendChild(allOption);
-
-    for (const stream of availableStreams) {
-        const option =
-            document.createElement("option");
-
-        option.value = stream.stream_id;
-        option.textContent = stream.username;
-
-        playerFilterElement.appendChild(option);
-    }
-
-    const playerStillExists =
-        availableStreams.some(
-            stream =>
-                stream.stream_id === previousValue
-        );
-
-    if (playerStillExists) {
-        playerFilterElement.value =
-            previousValue;
-    } else {
-        playerFilterElement.value = "";
-    }
-}
-
-
-function clearImage(tile) {
-    const oldUrl = tile.image.dataset.url;
-
-    if (oldUrl) {
-        URL.revokeObjectURL(oldUrl);
-        delete tile.image.dataset.url;
-    }
-
-    tile.image.removeAttribute("src");
-}
-
-
-function removeTile(streamId) {
-    const tile = streamTiles.get(streamId);
-
-    if (!tile) {
-        return;
-    }
-
-    clearImage(tile);
-    tile.element.remove();
-    streamTiles.delete(streamId);
-}
-
-
-function createTile(stream) {
-    const element = document.createElement("div");
-    element.className = "stream-tile";
-    element.dataset.streamId = stream.stream_id;
-
-    element.addEventListener("click", () => {
-        playerFilterElement.value =
-            stream.stream_id;
-
-        updateStreams();
-    });
-
-    const name = document.createElement("div");
-    name.className = "stream-name";
-    name.textContent = stream.username;
-
-    const imageWrap = document.createElement("div");
-    imageWrap.className = "stream-image-wrap";
-
-    const image = document.createElement("img");
-    image.className = "stream-image";
-    image.alt = stream.username;
-
-    imageWrap.appendChild(image);
-    element.appendChild(name);
-    element.appendChild(imageWrap);
-
-    streamsElement.appendChild(element);
-
-    const tile = {
-        element: element,
-        image: image,
-        name: name,
-    };
-
-    streamTiles.set(stream.stream_id, tile);
-
-    return tile;
-}
-
-
-function setGridLayout(count) {
-    if (count === 0) {
-        streamsElement.style.gridTemplateColumns = "1fr";
-        streamsElement.style.gridTemplateRows = "1fr";
-        return;
-    }
-
-    // A single player always uses the full available viewer area.
-    if (count === 1) {
-        streamsElement.style.gridTemplateColumns = "1fr";
-        streamsElement.style.gridTemplateRows = "1fr";
-        return;
-    }
-
-    const maxStreams = getMaxStreams();
-    const layout = MAX_OPTIONS[maxStreams];
-    const maxColumns = layout[0];
-    const maxRows = layout[1];
-
-    let columns = Math.min(
-        maxColumns,
-        Math.ceil(Math.sqrt(count))
-    );
-
-    if (maxRows === 1) {
-        columns = Math.min(maxColumns, count);
-    }
-
-    columns = Math.max(1, columns);
-
-    let rows = Math.ceil(count / columns);
-
-    while (
-        rows > maxRows &&
-        columns < maxColumns
-    ) {
-        columns += 1;
-        rows = Math.ceil(count / columns);
-    }
-
-    streamsElement.style.gridTemplateColumns =
-        `repeat(${columns}, minmax(0, 1fr))`;
-
-    streamsElement.style.gridTemplateRows =
-        `repeat(${rows}, minmax(0, 1fr))`;
-}
-
-
-function updateBackButton() {
-    backButton.hidden =
-        !playerFilterElement.value;
-}
-
-
-function updateStreams() {
-    updateBackButton();
-
-    const filteredStreams =
-        getFilteredStreams();
-
-    const player =
-        playerFilterElement.value;
-
-    let displayStreams;
-
-    // Player selection is a focused single-player view.
-    if (player) {
-        displayStreams =
-            filteredStreams.filter(
-                stream =>
-                    stream.stream_id === player
-            );
-    } else {
-        displayStreams =
-            filteredStreams.slice(
-                0,
-                getMaxStreams()
-            );
-    }
-
-    selectedStreamIds =
-        displayStreams.map(
-            stream => stream.stream_id
-        );
-
-    const selectedSet =
-        new Set(selectedStreamIds);
-
-    for (
-        const streamId
-        of Array.from(streamTiles.keys())
-    ) {
-        if (!selectedSet.has(streamId)) {
-            removeTile(streamId);
-        }
-    }
-
-    const emptyMessage =
-        document.getElementById("empty-message");
-
-    if (selectedStreamIds.length === 0) {
-        if (!emptyMessage) {
-            const message =
-                document.createElement("div");
-
-            message.id = "empty-message";
-
-            message.textContent =
-                allStreams.length === 0
-                    ? "Waiting for streams..."
-                    : "No matching streams online.";
-
-            streamsElement.appendChild(message);
-        } else {
-            emptyMessage.textContent =
-                allStreams.length === 0
-                    ? "Waiting for streams..."
-                    : "No matching streams online.";
-        }
-
-        setGridLayout(0);
-    } else {
-        if (emptyMessage) {
-            emptyMessage.remove();
-        }
-
-        for (const stream of displayStreams) {
-            if (
-                !streamTiles.has(
-                    stream.stream_id
-                )
-            ) {
-                createTile(stream);
-            }
-
-            const tile =
-                streamTiles.get(
-                    stream.stream_id
-                );
-
-            tile.name.textContent =
-                stream.username;
-
-            tile.image.alt =
-                stream.username;
-        }
-
-        // Reorder tiles to match the current display order.
-        for (const stream of displayStreams) {
-            const tile =
-                streamTiles.get(
-                    stream.stream_id
-                );
-
-            if (tile) {
-                streamsElement.appendChild(
-                    tile.element
-                );
-            }
-        }
-
-        setGridLayout(
-            selectedStreamIds.length
-        );
-
-    }
-
-    if (
-        ws.readyState ===
-        WebSocket.OPEN
-    ) {
-        ws.send(JSON.stringify({
-            type: "subscribe",
-            streams: selectedStreamIds,
-        }));
-    }
-}
-
-
-// Each stream is sent as one compressed batch containing complete PNG frames.
-// The browser buffers them and plays frames continuously at STREAM_FPS.
-const STREAM_FPS = 15;
-const FRAME_INTERVAL_MS = 1000 / STREAM_FPS;
-const MIN_START_BUFFER = 15;
-const frameQueues = new Map();
-const framePlaying = new Set();
-
-async function decodeFrameBatch(data) {
-    // RAW TEST VERSION:
-    // The client sends the length-prefixed PNG batch directly. This removes
-    // browser decompression from the equation so we can verify the playback
-    // protocol independently of DecompressionStream support.
-    const bytes = new Uint8Array(
-        await data.arrayBuffer()
-    );
-
-    const view = new DataView(
-        bytes.buffer, bytes.byteOffset, bytes.byteLength
-    );
-
-    if (bytes.length < 4) {
-        throw new Error("Invalid frame batch: too short");
-    }
-    let offset = 0;
-    const count = view.getUint32(offset, false);
-    offset += 4;
-    const frames = [];
-
-    for (let i = 0; i < count; i++) {
-        const length = view.getUint32(offset, false);
-        offset += 4;
-        if (length < 1 || offset + length > bytes.length) {
-            throw new Error("Invalid frame batch");
-        }
-        frames.push(new Blob(
-            [bytes.slice(offset, offset + length)],
-            { type: "image/png" }
-        ));
-        offset += length;
-    }
-    return frames;
-}
-
-async function updateFrame(streamId, batchBlob) {
-    try {
-        console.log(
-            "[Batch] received",
-            streamId,
-            batchBlob.size,
-            "bytes"
-        );
-
-        const frames = await decodeFrameBatch(batchBlob);
-
-        debugStats.batchesDecoded++;
-        debugStats.framesDecoded += frames.length;
-
-        console.log(
-            "[Batch] decoded",
-            frames.length,
-            "frames"
-        );
-
-        if (!frameQueues.has(streamId)) {
-            frameQueues.set(streamId, []);
-        }
-
-        frameQueues.get(streamId).push(...frames);
-
-        if (!framePlaying.has(streamId) &&
-            frameQueues.get(streamId).length >= MIN_START_BUFFER) {
-            console.log("[Batch] starting playback");
-            playQueuedFrames(streamId);
-        }
-    } catch (error) {
-        debugStats.errors++;
-        debugStats.lastError =
-            error && error.message
-                ? error.message
-                : String(error);
-
-        console.error(
-            "Frame batch decode failed:",
-            error,
-            batchBlob
-        );
-    }
-}
-
-function playQueuedFrames(streamId) {
-    const queue = frameQueues.get(streamId);
-    const tile = streamTiles.get(streamId);
-    if (!queue || !tile) {
-        framePlaying.delete(streamId);
-        return;
-    }
-
-    const blob = queue.shift();
-    if (!blob) {
-        framePlaying.delete(streamId);
-        return;
-    }
-
-    const url = URL.createObjectURL(blob);
-    const oldUrl = tile.image.dataset.url;
-    tile.image.src = url;
-    tile.image.dataset.url = url;
-    debugStats.framesDisplayed++;
-
-    if (oldUrl) {
-        URL.revokeObjectURL(oldUrl);
-    }
-
-    framePlaying.add(streamId);
-    setTimeout(
-        () => playQueuedFrames(streamId),
-        FRAME_INTERVAL_MS
-    );
-}
-
-
-backButton.addEventListener(
-    "click",
-    () => {
-        // Return to the current tournament's multi-player view.
-        playerFilterElement.value = "";
-        updateStreams();
-    }
-);
-
-
-tournamentFilterElement.addEventListener(
-    "change",
-    () => {
-        // Changing tournament can make the selected
-        // player unavailable, so rebuild the player list.
-        updatePlayerOptions();
-        updateStreams();
-    }
-);
-
-
-playerFilterElement.addEventListener(
-    "change",
-    updateStreams
-);
-
-
-maxStreamsElement.addEventListener(
-    "change",
-    updateStreams
-);
-
+const img = document.getElementById("frame");
+const info = document.getElementById("info");
+let currentStream = null;
+let expectingFrame = false;
 
 ws.onmessage = function(event) {
     if (typeof event.data === "string") {
-        const data =
-            JSON.parse(event.data);
-
+        const data = JSON.parse(event.data);
         if (data.type === "streams") {
-            allStreams = data.streams;
-
-            // The stream list is the authoritative state. Remove any
-            // screen immediately if its stream is no longer active.
-            const activeStreamIds = new Set(
-                allStreams.map(
-                    stream => stream.stream_id
-                )
-            );
-
-            for (
-                const streamId
-                of Array.from(
-                    streamTiles.keys()
-                )
-            ) {
-                if (
-                    !activeStreamIds.has(
-                        streamId
-                    )
-                ) {
-                    removeTile(streamId);
-                }
+            console.log("Streams:", data.streams);
+            if (data.streams.length > 0 && currentStream === null) {
+                const stream = data.streams[0];
+                currentStream = stream.stream_id;
+                info.textContent = stream.username + " - " + stream.game;
+                ws.send(JSON.stringify({type:"subscribe", streams:[currentStream]}));
+                console.log("Subscribed:", currentStream);
             }
-
-            selectedStreamIds =
-                selectedStreamIds.filter(
-                    streamId =>
-                        activeStreamIds.has(
-                            streamId
-                        )
-                );
-
-            updateTournamentOptions();
-            updatePlayerOptions();
-            updateStreams();
+        } else if (data.type === "frame" && data.stream_id === currentStream) {
+            expectingFrame = true;
         }
-
-        else if (data.type === "stream_end") {
-            const streamId = data.stream_id;
-
-            // Immediately remove the ended stream as an additional
-            // fast cleanup. The following streams message is still
-            // the authoritative active-stream state.
-            removeTile(streamId);
-
-            selectedStreamIds =
-                selectedStreamIds.filter(
-                    id => id !== streamId
-                );
-
-            allStreams =
-                allStreams.filter(
-                    stream =>
-                        stream.stream_id !== streamId
-                );
-
-            updateTournamentOptions();
-            updatePlayerOptions();
-            updateStreams();
-        }
-
-        else if (
-            data.type === "frame" &&
-            selectedStreamIds.includes(
-                data.stream_id
-            )
-        ) {
-            expectedFrameStreamId =
-                data.stream_id;
-        }
-    }
-
-    else if (expectedFrameStreamId) {
-        debugStats.binaryMessages++;
-        debugStats.batchesReceived++;
-        debugStats.lastStream =
-            expectedFrameStreamId;
-        debugStats.lastBatchBytes =
-            event.data.size;
-
-        updateFrame(
-            expectedFrameStreamId,
-            event.data
-        );
-
-        expectedFrameStreamId = null;
+    } else if (expectingFrame) {
+        const url = URL.createObjectURL(event.data);
+        const oldUrl = img.dataset.url;
+        img.src = url;
+        img.dataset.url = url;
+        if (oldUrl) URL.revokeObjectURL(oldUrl);
+        expectingFrame = false;
     }
 };
-
-
-ws.onopen = function() {
-    console.log("Viewer connected");
-};
-
-
-ws.onclose = function() {
-    console.log("Viewer disconnected");
-
-    for (
-        const streamId
-        of Array.from(
-            streamTiles.keys()
-        )
-    ) {
-        removeTile(streamId);
-    }
-
-    selectedStreamIds = [];
-    allStreams = [];
-
-    updateTournamentOptions();
-    updatePlayerOptions();
-    updateStreams();
-};
-
-
-ws.onerror = function(error) {
-    console.error(
-        "WebSocket error:",
-        error
-    );
-};
+ws.onopen = () => console.log("Viewer connected");
+ws.onclose = () => { console.log("Viewer disconnected"); info.textContent = "Viewer disconnected"; };
+ws.onerror = error => console.error("WebSocket error:", error);
 </script>
-
 </body>
 </html>
 """)
 
-
 @app.get("/health")
 async def health():
-    return {
-        "status": "ok",
-        "active_streams": len(streams),
-        "viewers": len(viewers),
-    }
+    return {"status": "ok", "active_streams": len(streams), "viewers": len(viewers)}
