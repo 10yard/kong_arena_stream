@@ -190,7 +190,7 @@ async def home():
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Kong Arena Live Stream</title>
+<title>Kong Arena Live</title>
 
 <style>
 * {
