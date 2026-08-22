@@ -154,18 +154,13 @@ async def broadcast_stream_end(stream_id):
 
 
 async def broadcast_frame(stream_id, frame):
-    # Take a snapshot of subscribed viewers first.
+    # Take a snapshot of the viewers first. This prevents a slow viewer
+    # from holding up delivery to every other viewer.
     targets = [
         viewer
         for viewer, subscriptions in list(viewers.items())
         if stream_id in subscriptions
     ]
-
-    # Nobody is watching this stream, so there is nothing to broadcast.
-    if not targets:
-        return
-
-    start = time.perf_counter()
 
     async def send_frame(viewer):
         # Keep the control message and its frame together for this viewer.
@@ -187,13 +182,6 @@ async def broadcast_frame(stream_id, frame):
     for viewer, result in zip(targets, results):
         if isinstance(result, Exception):
             viewers.pop(viewer, None)
-
-    elapsed = (time.perf_counter() - start) * 1000
-    if elapsed > 10:
-        print(
-            f"Broadcast: {elapsed:.1f} ms "
-            f"to {len(targets)} viewer(s)"
-        )
 
 
 @app.get("/")
@@ -872,95 +860,63 @@ function updateStreams() {
 }
 
 
-// Each stream is sent as one compressed batch containing complete PNG frames.
-// The browser buffers them and plays frames continuously at STREAM_FPS.
-const STREAM_FPS = 15;
-const FRAME_INTERVAL_MS = 1000 / STREAM_FPS;
-const MIN_START_BUFFER = 15;
-const frameQueues = new Map();
-const framePlaying = new Set();
+// Keep only the newest frame for each stream. If decoding/rendering
+// briefly falls behind, older frames are discarded rather than queued.
+const pendingFrames = new Map();
+let renderScheduled = false;
 
-async function decodeFrameBatch(data) {
-    // RAW TEST VERSION:
-    // The client sends the length-prefixed PNG batch directly. This removes
-    // browser decompression from the equation so we can verify the playback
-    // protocol independently of DecompressionStream support.
-    const bytes = new Uint8Array(
-        await data.arrayBuffer()
-    );
+function updateFrame(streamId, blob) {
+    pendingFrames.set(streamId, blob);
 
-    const view = new DataView(
-        bytes.buffer, bytes.byteOffset, bytes.byteLength
-    );
-
-    if (bytes.length < 4) {
-        throw new Error("Invalid frame batch: too short");
-    }
-    let offset = 0;
-    const count = view.getUint32(offset, false);
-    offset += 4;
-    const frames = [];
-
-    for (let i = 0; i < count; i++) {
-        const length = view.getUint32(offset, false);
-        offset += 4;
-        if (length < 1 || offset + length > bytes.length) {
-            throw new Error("Invalid frame batch");
-        }
-        frames.push(new Blob(
-            [bytes.slice(offset, offset + length)],
-            { type: "image/png" }
-        ));
-        offset += length;
-    }
-    return frames;
-}
-
-async function updateFrame(streamId, batchBlob) {
-    try {
-        const frames = await decodeFrameBatch(batchBlob);
-        if (!frameQueues.has(streamId)) {
-            frameQueues.set(streamId, []);
-        }
-        frameQueues.get(streamId).push(...frames);
-
-        if (!framePlaying.has(streamId) &&
-            frameQueues.get(streamId).length >= MIN_START_BUFFER) {
-            playQueuedFrames(streamId);
-        }
-    } catch (error) {
-        console.error("Frame batch decode failed:", error, batchBlob);
+    if (!renderScheduled) {
+        renderScheduled = true;
+        requestAnimationFrame(renderPendingFrames);
     }
 }
 
-function playQueuedFrames(streamId) {
-    const queue = frameQueues.get(streamId);
-    const tile = streamTiles.get(streamId);
-    if (!queue || !tile) {
-        framePlaying.delete(streamId);
-        return;
+function renderPendingFrames() {
+    renderScheduled = false;
+
+    // Take a snapshot so frames that arrive during this render cycle
+    // are left pending for the next animation frame.
+    const framesToRender =
+        new Map(pendingFrames);
+
+    pendingFrames.clear();
+
+    for (
+        const [streamId, blob]
+        of framesToRender
+    ) {
+        const tile =
+            streamTiles.get(streamId);
+
+        if (!tile) {
+            continue;
+        }
+
+        const url =
+            URL.createObjectURL(blob);
+
+        const oldUrl =
+            tile.image.dataset.url;
+
+        tile.image.src = url;
+        tile.image.dataset.url = url;
+
+        if (oldUrl) {
+            URL.revokeObjectURL(oldUrl);
+        }
     }
 
-    const blob = queue.shift();
-    if (!blob) {
-        framePlaying.delete(streamId);
-        return;
+    // If newer frames arrived while rendering, schedule one more
+    // browser paint cycle and again use only the latest frame.
+    if (pendingFrames.size > 0) {
+        renderScheduled = true;
+        requestAnimationFrame(
+            renderPendingFrames
+        );
     }
-
-    const url = URL.createObjectURL(blob);
-    const oldUrl = tile.image.dataset.url;
-    tile.image.src = url;
-    tile.image.dataset.url = url;
-
-    if (oldUrl) {
-        URL.revokeObjectURL(oldUrl);
-    }
-
-    framePlaying.add(streamId);
-    setTimeout(
-        () => playQueuedFrames(streamId),
-        FRAME_INTERVAL_MS
-    );
 }
 
 
