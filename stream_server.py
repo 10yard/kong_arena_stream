@@ -191,7 +191,7 @@ async def home():
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Kong Arena Live Stream</title>
+<title>Kong Arena Live (Experimental)</title>
 
 <style>
 * {
@@ -395,7 +395,7 @@ select,
 <div id="page">
 
     <div id="toolbar">
-        <h1>Kong Arena Live Stream</h1>
+        <h1>Kong Arena Live (Experimental)</h1>
 
         <div id="controls">
 
