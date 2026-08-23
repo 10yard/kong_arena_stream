@@ -2,6 +2,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 import json
 import time
+import asyncio
 
 app = FastAPI()
 
@@ -79,13 +80,12 @@ async def viewer_stream(websocket: WebSocket):
     viewers[websocket] = set()
 
     try:
+        await send_stream_list(websocket)
+
         while True:
             data = json.loads(await websocket.receive_text())
 
-            if data.get("type") == "get_streams":
-                await send_stream_list(websocket)
-
-            elif data.get("type") == "subscribe":
+            if data.get("type") == "subscribe":
                 subscriptions = set(data.get("streams", []))
                 viewers[websocket] = subscriptions
 
@@ -274,12 +274,6 @@ select,
     background: #333;
 }
 
-#content {
-    flex: 1 1 auto;
-    min-height: 0;
-    display: flex;
-}
-
 #streams {
     flex: 1 1 auto;
     min-height: 0;
@@ -363,78 +357,6 @@ select,
     justify-self: center;
     color: #aaa;
     font-size: 20px;
-}
-
-
-#online-panel {
-    width: 230px;
-    flex: 0 0 230px;
-    background: #181818;
-    border-left: 1px solid #555;
-    padding: 14px;
-    overflow-y: auto;
-}
-
-#online-panel h2 {
-    margin: 0 0 12px;
-    font-size: 16px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: #ccc;
-}
-
-.online-player {
-    padding: 10px 0;
-    border-bottom: 1px solid #333;
-}
-
-.online-player-name {
-    display: block;
-    color: white;
-    font-weight: bold;
-    text-decoration: none;
-}
-
-.online-player-name:hover {
-    color: #a970ff;
-    text-decoration: underline;
-}
-
-.online-player-game {
-    margin-top: 4px;
-    color: #aaa;
-    font-size: 13px;
-    line-height: 1.3;
-}
-
-.online-empty {
-    color: #777;
-    font-size: 14px;
-}
-
-@media (max-width: 850px) {
-    #content {
-        flex-direction: column;
-    }
-
-    #online-panel {
-        width: 100%;
-        flex: 0 0 auto;
-        max-height: 35%;
-        border-left: 0;
-        border-top: 1px solid #555;
-    }
-
-    #online-players {
-        display: flex;
-        gap: 14px;
-        flex-wrap: wrap;
-    }
-
-    .online-player {
-        min-width: 160px;
-        flex: 1 1 160px;
-    }
 }
 
 @media (max-width: 850px) {
@@ -524,21 +446,10 @@ select,
         </div>
     </div>
 
-    <div id="content">
-        <div id="streams">
-            <div id="empty-message">
-                Waiting for streams...
-            </div>
+    <div id="streams">
+        <div id="empty-message">
+            Waiting for streams...
         </div>
-
-        <aside id="online-panel">
-            <h2>Online Players</h2>
-            <div id="online-players">
-                <div class="online-empty">
-                    No players online.
-                </div>
-            </div>
-        </aside>
     </div>
 
 </div>
@@ -568,9 +479,6 @@ const maxStreamsElement =
 const backButton =
     document.getElementById("back-button");
 
-const onlinePlayersElement =
-    document.getElementById("online-players");
-
 const MAX_OPTIONS = {
     1:  [1, 1],
     2:  [2, 1],
@@ -585,44 +493,6 @@ let allStreams = [];
 let selectedStreamIds = [];
 let streamTiles = new Map();
 let expectedFrameStreamId = null;
-
-
-function updateOnlinePlayers() {
-    onlinePlayersElement.replaceChildren();
-
-    if (allStreams.length === 0) {
-        const empty = document.createElement("div");
-        empty.className = "online-empty";
-        empty.textContent = "No players online.";
-        onlinePlayersElement.appendChild(empty);
-        return;
-    }
-
-    const sortedStreams = [...allStreams].sort(
-        (a, b) => a.username.localeCompare(b.username)
-    );
-
-    for (const stream of sortedStreams) {
-        const player = document.createElement("div");
-        player.className = "online-player";
-
-        const link = document.createElement("a");
-        link.className = "online-player-name";
-        link.textContent = stream.username;
-        link.href =
-            `https://www.twitch.tv/${encodeURIComponent(stream.username)}`;
-        link.target = "_blank";
-        link.rel = "noopener noreferrer";
-
-        const game = document.createElement("div");
-        game.className = "online-player-game";
-        game.textContent = stream.game || "";
-
-        player.appendChild(link);
-        player.appendChild(game);
-        onlinePlayersElement.appendChild(player);
-    }
-}
 
 
 function getMaxStreams() {
@@ -1124,7 +994,6 @@ ws.onmessage = function(event) {
 
             updateTournamentOptions();
             updatePlayerOptions();
-            updateOnlinePlayers();
             updateStreams();
         }
 
@@ -1149,7 +1018,6 @@ ws.onmessage = function(event) {
 
             updateTournamentOptions();
             updatePlayerOptions();
-            updateOnlinePlayers();
             updateStreams();
         }
 
@@ -1177,10 +1045,6 @@ ws.onmessage = function(event) {
 
 ws.onopen = function() {
     console.log("Viewer connected");
-
-    ws.send(JSON.stringify({
-        type: "get_streams"
-    }));
 };
 
 
@@ -1201,7 +1065,6 @@ ws.onclose = function() {
 
     updateTournamentOptions();
     updatePlayerOptions();
-    updateOnlinePlayers();
     updateStreams();
 };
 
