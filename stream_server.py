@@ -545,7 +545,7 @@ function updateTournamentOptions() {
 
     allOption.value = "";
     allOption.textContent =
-        "All tournaments";
+        "All games in play";
 
     tournamentFilterElement.appendChild(allOption);
 
