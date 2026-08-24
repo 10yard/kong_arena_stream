@@ -409,11 +409,11 @@ select,
 
             <div class="control-group">
                 <label for="tournament-filter">
-                    Tournament:
+                    Game Filter:
                 </label>
 
                 <select id="tournament-filter">
-                    <option value="">All tournaments</option>
+                    <option value="">All games in play</option>
                 </select>
             </div>
 
