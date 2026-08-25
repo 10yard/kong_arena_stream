@@ -332,6 +332,10 @@ select,
     white-space: nowrap;
 }
 
+.stream-user {
+    font-size: 1.2em;
+}
+
 .stream-image-wrap {
     flex: 1 1 auto;
     min-width: 0;
@@ -825,6 +829,7 @@ function updateStreams() {
 			tile.name.replaceChildren();
 
 			const user = document.createElement("strong");
+			user.className = "stream-user";
 			user.textContent = stream.username;
 
 			const separator = document.createTextNode(" | ");
