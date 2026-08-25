@@ -329,9 +329,8 @@ select,
     text-align: center;
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: pre-line;
+    white-space: nowrap;
 }
-
 
 .stream-image-wrap {
     flex: 1 1 auto;
@@ -821,8 +820,8 @@ function updateStreams() {
                     stream.stream_id
                 );
 
-			tile.name.textContent =
-				stream.username + "\n (" + stream.game + ")";
+            tile.name.textContent =
+                stream.username;
 
             tile.image.alt =
                 stream.username;
