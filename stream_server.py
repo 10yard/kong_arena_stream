@@ -4,6 +4,8 @@ import json
 import time
 import asyncio
 
+STALE_STREAM_TIMEOUT = 30
+
 app = FastAPI()
 
 # stream_id -> stream information and latest frame
@@ -183,6 +185,33 @@ async def broadcast_frame(stream_id, frame):
         if isinstance(result, Exception):
             viewers.pop(viewer, None)
 
+
+async def cleanup_stale_streams():
+    while True:
+        await asyncio.sleep(5)
+
+        now = time.time()
+
+        stale = [
+            stream_id
+            for stream_id, stream in streams.items()
+            if now - stream["last_frame"]
+            > STALE_STREAM_TIMEOUT
+        ]
+
+        for stream_id in stale:
+            print(
+                f"[Stream] Removing stale stream: "
+                f"{stream_id}"
+            )
+
+            streams.pop(
+                stream_id,
+                None
+            )
+
+        if stale:
+            await broadcast_stream_list()
 
 @app.get("/")
 async def home():
@@ -1116,3 +1145,9 @@ async def health():
         "active_streams": len(streams),
         "viewers": len(viewers),
     }
+
+@app.on_event("startup")
+async def start_cleanup():
+    asyncio.create_task(
+        cleanup_stale_streams()
+    )
