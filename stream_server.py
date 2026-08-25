@@ -251,6 +251,7 @@ body {
     white-space: nowrap;
 }
 
+
 select,
 #back-button {
     font-size: 15px;
@@ -330,6 +331,15 @@ select,
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.stream-tournament {
+    font-size: 12px;
+    font-weight: normal;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .stream-image-wrap {
@@ -655,6 +665,10 @@ function createTile(stream) {
     name.className = "stream-name";
     name.textContent = stream.username;
 
+    const tournament = document.createElement("div");
+    tournament.className = "stream-tournament";
+    tournament.textContent = stream.game || "";
+
     const imageWrap = document.createElement("div");
     imageWrap.className = "stream-image-wrap";
 
@@ -663,7 +677,9 @@ function createTile(stream) {
     image.alt = stream.username;
 
     imageWrap.appendChild(image);
+
     element.appendChild(name);
+    element.appendChild(tournament);
     element.appendChild(imageWrap);
 
     streamsElement.appendChild(element);
@@ -672,6 +688,7 @@ function createTile(stream) {
         element: element,
         image: image,
         name: name,
+        tournament: tournament,
     };
 
     streamTiles.set(stream.stream_id, tile);
@@ -822,6 +839,9 @@ function updateStreams() {
 
             tile.name.textContent =
                 stream.username;
+
+			tile.tournament.textContent = 
+				stream.game;
 
             tile.image.alt =
                 stream.username;
