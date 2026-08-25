@@ -820,8 +820,24 @@ function updateStreams() {
                     stream.stream_id
                 );
 
-            tile.name.textContent =
-                stream.username + "  |  " + stream.game;
+
+
+			tile.name.replaceChildren();
+
+			const user = document.createElement("strong");
+			user.textContent = stream.username;
+
+			const separator = document.createTextNode(" | ");
+
+			const game = document.createElement("span");
+			game.textContent = stream.game;
+
+			tile.name.append(
+				user,
+				separator,
+				game
+			);
+
 
             tile.image.alt =
                 stream.username;
