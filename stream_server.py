@@ -821,7 +821,7 @@ function updateStreams() {
                 );
 
             tile.name.textContent =
-                stream.username + " " + stream.game;
+                stream.username + " | " stream.game;
 
             tile.image.alt =
                 stream.username;
