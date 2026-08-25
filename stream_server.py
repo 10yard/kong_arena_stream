@@ -333,8 +333,14 @@ select,
 }
 
 .stream-user {
-    font-size: 1.3em;
+    font-size: 1.2em;
 }
+
+.stream-game {
+    font-size: 0.9em;
+    opacity: 0.85;
+}
+
 
 .stream-image-wrap {
     flex: 1 1 auto;
@@ -835,6 +841,7 @@ function updateStreams() {
 			const separator = document.createTextNode("\u00A0\u00A0•\u00A0\u00A0");
 
 			const game = document.createElement("span");
+			game.className = "stream-game";
 			game.textContent = stream.game;
 
 			tile.name.append(
