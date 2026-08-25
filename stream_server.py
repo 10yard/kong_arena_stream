@@ -333,7 +333,7 @@ select,
 }
 
 .stream-user {
-    font-size: 1.2em;
+    font-size: 1.3em;
 }
 
 .stream-image-wrap {
@@ -832,7 +832,7 @@ function updateStreams() {
 			user.className = "stream-user";
 			user.textContent = stream.username;
 
-			const separator = document.createTextNode("  •  ");
+			const separator = document.createTextNode("\u00A0\u00A0•\u00A0\u00A0");
 
 			const game = document.createElement("span");
 			game.textContent = stream.game;
