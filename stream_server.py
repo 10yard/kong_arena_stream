@@ -832,7 +832,7 @@ function updateStreams() {
 			user.className = "stream-user";
 			user.textContent = stream.username;
 
-			const separator = document.createTextNode(" | ");
+			const separator = document.createTextNode("  •  ");
 
 			const game = document.createElement("span");
 			game.textContent = stream.game;
