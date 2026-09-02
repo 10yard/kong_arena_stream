@@ -3,8 +3,13 @@ from fastapi.responses import HTMLResponse
 import json
 import time
 import asyncio
+import io
+
+from PIL import Image
 
 STALE_STREAM_TIMEOUT = 30
+
+PROGRESS_OVERLAY = Image.open("progress.png").convert("RGBA")
 
 app = FastAPI()
 
@@ -32,6 +37,7 @@ async def client_stream(websocket: WebSocket):
         streams[stream_id] = {
             "username": metadata["username"],
             "game": metadata["game"],
+            "streaming": metadata.get("streaming", "full"),
             "frame": None,
             "last_frame": time.time(),
         }
@@ -45,12 +51,33 @@ async def client_stream(websocket: WebSocket):
         # its first frame and is genuinely ready to display.
         stream_announced = False
 
+
         while True:
             frame = await websocket.receive_bytes()
 
             if stream_id in streams:
+
+                if streams[stream_id]["streaming"] == "progress":
+                    image = Image.open(
+                        io.BytesIO(frame)
+                    ).convert("RGBA")
+
+                    image = Image.alpha_composite(
+                        image,
+                        PROGRESS_OVERLAY,
+                    )
+
+                    output = io.BytesIO()
+                    image.save(
+                        output,
+                        format="PNG",
+                    )
+
+                    frame = output.getvalue()
+
                 streams[stream_id]["frame"] = frame
                 streams[stream_id]["last_frame"] = time.time()
+
 
             if not stream_announced:
                 stream_announced = True
