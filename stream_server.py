@@ -62,9 +62,17 @@ async def client_stream(websocket: WebSocket):
                         io.BytesIO(frame)
                     ).convert("RGBA")
 
+                    if PROGRESS_OVERLAY.size == image.size:
+                        overlay = PROGRESS_OVERLAY
+                    else:
+                        overlay = PROGRESS_OVERLAY.resize(
+                            image.size,
+                            Image.Resampling.LANCZOS,
+                        )
+
                     image = Image.alpha_composite(
                         image,
-                        PROGRESS_OVERLAY,
+                        overlay,
                     )
 
                     output = io.BytesIO()
@@ -74,6 +82,7 @@ async def client_stream(websocket: WebSocket):
                     )
 
                     frame = output.getvalue()
+
 
                 streams[stream_id]["frame"] = frame
                 streams[stream_id]["last_frame"] = time.time()
