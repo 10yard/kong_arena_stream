@@ -1184,7 +1184,5 @@ async def health():
 
 @app.on_event("startup")
 async def start_cleanup():
-    asyncio.create_task(
-        print("[Stream] Starting stale-stream cleanup task")
-        cleanup_stale_streams()
-    )
+    print("[Stream] Starting stale-stream cleanup task")
+    asyncio.create_task(cleanup_stale_streams())
