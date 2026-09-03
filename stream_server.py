@@ -7,7 +7,8 @@ import io
 
 from PIL import Image
 
-STALE_STREAM_TIMEOUT = 180
+STALE_STREAM_TIMEOUT = 30
+PROGRESS_STALE_STREAM_TIMEOUT = 180
 
 PROGRESS_OVERLAY = Image.open("progress.png").convert("RGBA")
 
@@ -231,8 +232,7 @@ async def cleanup_stale_streams():
         stale = [
             stream_id
             for stream_id, stream in streams.items()
-            if now - stream["last_frame"]
-            > STALE_STREAM_TIMEOUT
+            if now - stream["last_frame"] > (PROGRESS_STALE_STREAM_TIMEOUT if stream["streaming"] == "progress" else STALE_STREAM_TIMEOUT)
         ]
 
         for stream_id in stale:
