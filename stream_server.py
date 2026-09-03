@@ -223,7 +223,7 @@ async def broadcast_frame(stream_id, frame):
             viewers.pop(viewer, None)
 
 
-async def cleanup_stale_streams():
+async def stale_stream_cleanup_worker():
     while True:
         await asyncio.sleep(5)
 
@@ -231,23 +231,55 @@ async def cleanup_stale_streams():
 
         stale = [
             stream_id
-            for stream_id, stream in streams.items()
-            if now - stream["last_frame"] > (PROGRESS_STALE_STREAM_TIMEOUT if stream["streaming"] == "progress" else STALE_STREAM_TIMEOUT)
+            for stream_id, stream in list(streams.items())
+            if now - stream.get("last_frame", now) > (
+                PROGRESS_STALE_STREAM_TIMEOUT
+                if stream.get("streaming") == "progress"
+                else STALE_STREAM_TIMEOUT
+            )
         ]
 
         for stream_id in stale:
             print(
-                f"[Stream] Removing stale stream: "
-                f"{stream_id}"
+                f"[Stream] Removing stale stream: {stream_id}",
+                flush=True,
             )
-
-            streams.pop(
-                stream_id,
-                None
-            )
+            streams.pop(stream_id, None)
 
         if stale:
             await broadcast_stream_list()
+
+
+async def cleanup_stale_streams():
+    print(
+        "[Stream] Stale-stream cleanup supervisor running",
+        flush=True,
+    )
+
+    while True:
+        try:
+            await stale_stream_cleanup_worker()
+
+        except asyncio.CancelledError:
+            print(
+                "[Stream] Stale-stream cleanup supervisor cancelled",
+                flush=True,
+            )
+            raise
+
+        except Exception as exc:
+            print(
+                f"[Stream] Cleanup worker stopped: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            print(
+                "[Stream] Restarting cleanup worker in 1 second",
+                flush=True,
+            )
+
+            await asyncio.sleep(1)
+
 
 @app.get("/")
 async def home():
@@ -1184,5 +1216,5 @@ async def health():
 
 @app.on_event("startup")
 async def start_cleanup():
-    print("[Stream] Starting stale-stream cleanup task")
+    print("[Stream] Starting stale-stream cleanup task", flush=True)
     asyncio.create_task(cleanup_stale_streams())
