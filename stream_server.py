@@ -151,7 +151,7 @@ async def viewer_stream(websocket: WebSocket):
                     if sent_message is not None:
                         await broadcast_chat_message({
                             "id": str(sent_message.id),
-                            "author": "Website",
+                            "author": "Anonymous",
                             "content": sent_message.content,
                             "timestamp": sent_message.created_at.isoformat(),
                         })
