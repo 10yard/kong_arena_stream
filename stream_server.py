@@ -441,7 +441,7 @@ async def home():
 }
 
 html,
-html {
+body {
     -webkit-text-size-adjust: 100%;
     text-size-adjust: 100%;
 }
@@ -449,6 +449,7 @@ html {
 body {
     width: 100%;
     height: 100%;
+    min-height: 0;
     max-width: 100%;
     overflow-x: hidden;
     margin: 0;
@@ -525,6 +526,7 @@ select,
 
 #streams {
     flex: 1 1 auto;
+    height: 100%;
     min-height: 0;
     display: grid;
     gap: 10px;
@@ -620,6 +622,7 @@ select,
 
 #content {
     display: flex;
+    height: 0;
     flex: 1 1 auto;
     min-height: 0;
     min-width: 0;
@@ -632,6 +635,7 @@ select,
 
 #chat-panel {
     display: flex;
+    height: 100%;
     flex: 0 0 320px;
     flex-direction: column;
     min-width: 0;
