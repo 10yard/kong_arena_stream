@@ -4,6 +4,8 @@ import json
 import time
 import asyncio
 import io
+import os
+import discord
 
 from PIL import Image
 
@@ -13,6 +15,14 @@ PROGRESS_STALE_STREAM_TIMEOUT = 180
 PROGRESS_OVERLAY = Image.open("progress.png").convert("RGBA")
 
 app = FastAPI()
+
+# Discord set up
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+DISCORD_CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID", "0"))
+discord_intents = discord.Intents.default()
+discord_intents.message_content = True
+discord_client = discord.Client(intents=discord_intents)
+discord_task = None
 
 # stream_id -> stream information and latest frame
 streams = {}
@@ -280,6 +290,46 @@ async def cleanup_stale_streams():
 
             await asyncio.sleep(1)
 
+
+async def start_discord_bot():
+    if not DISCORD_BOT_TOKEN:
+        print("[Discord] DISCORD_BOT_TOKEN is not configured", flush=True)
+        return
+
+    if not DISCORD_CHANNEL_ID:
+        print("[Discord] DISCORD_CHANNEL_ID is not configured", flush=True)
+        return
+
+    try:
+        print("[Discord] Starting bot connection", flush=True)
+        await discord_client.start(DISCORD_BOT_TOKEN)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        print(f"[Discord] Connection failed: {exc}", flush=True)
+
+
+@discord_client.event
+async def on_ready():
+    print(
+        f"[Discord] Connected as {discord_client.user}; "
+        f"watching channel {DISCORD_CHANNEL_ID}",
+        flush=True,
+    )
+
+
+@discord_client.event
+async def on_message(message):
+    if message.author == discord_client.user:
+        return
+
+    if message.channel.id != DISCORD_CHANNEL_ID:
+        return
+
+    print(
+        f"[Discord] Message from {message.author}: {message.content}",
+        flush=True,
+    )
 
 @app.get("/")
 async def home():
@@ -1216,5 +1266,15 @@ async def health():
 
 @app.on_event("startup")
 async def start_cleanup():
+    global discord_task
     print("[Stream] Starting stale-stream cleanup task", flush=True)
     asyncio.create_task(cleanup_stale_streams())
+    discord_task = asyncio.create_task(start_discord_bot())
+
+@app.on_event("shutdown")
+async def stop_discord():
+    global discord_task
+    if discord_task:
+        discord_task.cancel()
+    if not discord_client.is_closed():
+        await discord_client.close()
