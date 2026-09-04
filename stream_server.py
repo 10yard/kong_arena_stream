@@ -147,14 +147,7 @@ async def viewer_stream(websocket: WebSocket):
                 if content:
                     if len(content) > 2000:
                         content = content[:2000]
-                    sent_message = await send_chat_message_to_discord(content)
-                    if sent_message is not None:
-                        await broadcast_chat_message({
-                            "id": str(sent_message.id),
-                            "author": "Anonymous",
-                            "content": sent_message.content,
-                            "timestamp": sent_message.created_at.isoformat(),
-                        })
+                    await send_chat_message_to_discord(content)
 
                 # Send the latest frame immediately after subscribing.
                 for stream_id in subscriptions:
@@ -408,7 +401,7 @@ async def broadcast_chat_message(message):
 
 async def send_chat_message_to_discord(content):
     if not DISCORD_CHANNEL_ID:
-        return None
+        return False
 
     channel = discord_client.get_channel(DISCORD_CHANNEL_ID)
     if channel is None:
@@ -416,13 +409,14 @@ async def send_chat_message_to_discord(content):
             channel = await discord_client.fetch_channel(DISCORD_CHANNEL_ID)
         except Exception as exc:
             print(f"[Discord] Could not fetch chat channel: {exc}", flush=True)
-            return None
+            return False
 
     try:
-        return await channel.send(content)
+        await channel.send(content)
+        return True
     except Exception as exc:
         print(f"[Discord] Could not send chat message: {exc}", flush=True)
-        return None
+        return False
 
 
 @app.get("/")
@@ -432,7 +426,6 @@ async def home():
 <html>
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Kong Arena Live View (Experimental)</title>
 
 <style>
@@ -442,16 +435,8 @@ async def home():
 
 html,
 body {
-    -webkit-text-size-adjust: 100%;
-    text-size-adjust: 100%;
-}
-
-body {
     width: 100%;
     height: 100%;
-    min-height: 0;
-    max-width: 100%;
-    overflow-x: hidden;
     margin: 0;
 }
 
@@ -526,7 +511,6 @@ select,
 
 #streams {
     flex: 1 1 auto;
-    height: 100%;
     min-height: 0;
     display: grid;
     gap: 10px;
@@ -622,7 +606,6 @@ select,
 
 #content {
     display: flex;
-    height: 0;
     flex: 1 1 auto;
     min-height: 0;
     min-width: 0;
@@ -635,7 +618,6 @@ select,
 
 #chat-panel {
     display: flex;
-    height: 100%;
     flex: 0 0 320px;
     flex-direction: column;
     min-width: 0;
@@ -721,13 +703,10 @@ select,
     background: #222;
     border: 1px solid #666;
     border-radius: 5px;
-    font-size: 16px;
 }
 
 @media (max-width: 850px) {
     #content {
-        width: 100%;
-        overflow-x: hidden;
         flex-direction: column;
     }
 
@@ -750,12 +729,6 @@ select,
 }
 
 @media (max-width: 600px) {
-    /* Keep chat readable on mobile, but disable message entry to avoid
-       Safari zooming when the composer is touched. */
-    #chat-form {
-        display: none;
-    }
-
     #toolbar h1 {
         font-size: 17px;
     }
@@ -1295,6 +1268,7 @@ function setChatVisible(visible) {
     chatPanel.hidden = !visible;
     chatOpenButton.hidden = visible;
     if (visible) {
+        chatInput.focus();
         chatMessagesElement.scrollTop = chatMessagesElement.scrollHeight;
     }
 }
