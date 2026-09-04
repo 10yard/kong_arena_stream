@@ -573,6 +573,9 @@ async def refresh_chat_history():
                 "content": content,
                 "timestamp": message.created_at.isoformat(),
             })
+
+        # Discord returns newest-first; reverse the collected list for display.
+        messages.reverse()
         chat_history_cache = messages
         chat_history_last_refresh = time.monotonic()
         print(f"[Discord] History refreshed: {len(messages)} messages; latest={messages[-1]['id'] if messages else 'none'}", flush=True)
