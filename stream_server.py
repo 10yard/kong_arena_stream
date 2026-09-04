@@ -632,11 +632,6 @@ select,
     border-left: 1px solid #555;
 }
 
-#chat-panel input,
-#chat-panel textarea {
-    font-size: 16px;
-}
-
 #chat-panel[hidden] {
     display: none;
 }
@@ -1279,9 +1274,7 @@ function setChatVisible(visible) {
     chatPanel.hidden = !visible;
     chatOpenButton.hidden = visible;
     if (visible) {
-        if (window.innerWidth > 768) {
-            chatInput.focus();
-        }
+        chatInput.focus();
         chatMessagesElement.scrollTop = chatMessagesElement.scrollHeight;
     }
 }
