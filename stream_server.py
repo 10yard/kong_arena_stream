@@ -683,7 +683,6 @@ select,
 
 .chat-author {
     font-weight: bold;
-    color: #9acbff;
 }
 
 .chat-time {
@@ -766,7 +765,7 @@ select,
 
         <div id="controls">
 
-            <button id="chat-open" type="button">Show chat</button>
+            <button id="chat-open" type="button" hidden>Show chat</button>
 
             <button
                 id="back-button"
@@ -821,7 +820,7 @@ select,
             </div>
         </div>
 
-        <aside id="chat-panel" hidden>
+        <aside id="chat-panel">
             <div id="chat-header">
                 <h2>Live chat</h2>
                 <button id="chat-close" type="button">Hide chat</button>
@@ -1281,13 +1280,31 @@ function setChatVisible(visible) {
     }
 }
 
+function colourForUsername(username) {
+    let hash = 0;
+
+    for (let i = 0; i < username.length; i++) {
+        hash = ((hash << 5) - hash) + username.charCodeAt(i);
+        hash |= 0;
+    }
+
+    // Use a bright, reasonably saturated colour.
+    // The hue is repeatable for the same username.
+    const hue = Math.abs(hash) % 360;
+
+    return `hsl(${hue}, 80%, 75%)`;
+}
+
 function addChatMessage(message) {
     const row = document.createElement("div");
     row.className = "chat-message";
 
     const author = document.createElement("span");
     author.className = "chat-author";
-    author.textContent = message.author || "Unknown";
+    
+    const username = message.author || "Unknown";
+    author.textContent = username;
+    author.style.color = colourForUsername(username);
 
     const time = document.createElement("span");
     time.className = "chat-time";
