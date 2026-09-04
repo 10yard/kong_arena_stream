@@ -632,6 +632,11 @@ select,
     border-left: 1px solid #555;
 }
 
+#chat-panel input,
+#chat-panel textarea {
+    font-size: 16px;
+}
+
 #chat-panel[hidden] {
     display: none;
 }
