@@ -9,6 +9,7 @@ import secrets
 import hmac
 import hashlib
 import base64
+import urllib.error
 import urllib.parse
 import urllib.request
 import discord
@@ -64,12 +65,32 @@ def _decode_session(value):
         return None
 
 def _discord_request(url, data=None, headers=None):
-    encoded = None
     if data is not None:
-        encoded = urllib.parse.urlencode(data).encode()
-    request = urllib.request.Request(url, data=encoded, headers=headers or {})
-    with urllib.request.urlopen(request, timeout=15) as response:
-        return json.loads(response.read().decode())
+        encoded_data = urllib.parse.urlencode(data).encode("utf-8")
+    else:
+        encoded_data = None
+
+    request = urllib.request.Request(
+        url,
+        data=encoded_data,
+        headers=headers or {},
+        method="POST" if data is not None else "GET",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    except urllib.error.HTTPError as exc:
+        error_body = exc.read().decode("utf-8", errors="replace")
+
+        print("[Auth] Discord request failed", flush=True)
+        print(f"[Auth] URL: {url}", flush=True)
+        print(f"[Auth] HTTP status: {exc.code}", flush=True)
+        print(f"[Auth] Response headers: {dict(exc.headers)}", flush=True)
+        print(f"[Auth] Response body: {error_body}", flush=True)
+
+        raise
 
 async def exchange_discord_code(code):
     return await asyncio.to_thread(
