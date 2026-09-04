@@ -746,6 +746,12 @@ select,
 }
 
 @media (max-width: 600px) {
+    /* Keep chat readable on mobile, but disable message entry to avoid
+       Safari zooming when the composer is touched. */
+    #chat-form {
+        display: none;
+    }
+
     #toolbar h1 {
         font-size: 17px;
     }
