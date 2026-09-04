@@ -143,23 +143,23 @@ async def viewer_stream(websocket: WebSocket):
                 viewers[websocket] = subscriptions
 
             elif data.get("type") == "chat_send":
-            content = str(data.get("content", "")).strip()
+                content = str(data.get("content", "")).strip()
 
-            if content:
-                if len(content) > 2000:
-                    content = content[:2000]
+                if content:
+                    if len(content) > 2000:
+                        content = content[:2000]
 
-                sent_message = await send_chat_message_to_discord(content)
+                    sent_message = await send_chat_message_to_discord(content)
 
-                if sent_message is not None:
-                    chat_message = {
-                        "id": str(sent_message.id),
-                        "author": str(sent_message.author.display_name),
-                        "content": sent_message.content,
-                        "timestamp": sent_message.created_at.isoformat(),
-                    }
+                    if sent_message is not None:
+                        chat_message = {
+                            "id": str(sent_message.id),
+                            "author": str(sent_message.author.display_name),
+                            "content": sent_message.content,
+                            "timestamp": sent_message.created_at.isoformat(),
+                        }
 
-                    await broadcast_chat_message(chat_message)
+                        await broadcast_chat_message(chat_message)
 
     except WebSocketDisconnect:
         pass
