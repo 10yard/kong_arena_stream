@@ -154,8 +154,18 @@ async def discord_callback(request: Request):
         token = await exchange_discord_code(code)
         user = await fetch_discord_user(token["access_token"])
         guilds = await fetch_discord_guilds(token["access_token"])
+    except urllib.error.HTTPError as exc:
+        error_body = exc.read().decode("utf-8", errors="replace")
+        print(
+            f"[Auth] Discord OAuth failed: HTTP {exc.code}: {error_body}",
+            flush=True,
+        )
+        return JSONResponse({"error": "Discord login failed"}, status_code=502)
     except Exception as exc:
-        print(f"[Auth] Discord OAuth failed: {exc}", flush=True)
+        print(
+            f"[Auth] Discord OAuth failed: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
         return JSONResponse({"error": "Discord login failed"}, status_code=502)
 
     if not any(str(guild.get("id")) == str(DISCORD_GUILD_ID) for guild in guilds):
