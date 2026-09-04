@@ -753,7 +753,7 @@ select,
 <div id="page">
 
     <div id="toolbar">
-        <h1>Kong Arena Live View (Experimental)</h1>
+        <h1>Kong Arena Live</h1>
 
         <div id="controls">
 
