@@ -426,7 +426,7 @@ async def home():
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Kong Arena Live View (Experimental)</title>
+<title>Kong Arena Live</title>
 
 <style>
 * {
