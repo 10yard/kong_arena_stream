@@ -372,7 +372,10 @@ async def viewer_stream(websocket: WebSocket):
                     if len(content) > 2000:
                         content = content[:2000]
 
-                    sent_message = await send_chat_message_to_discord(content)
+                    sent_message = await send_chat_message_to_discord(
+                        content,
+                        session_user.get("username", "Discord user"),
+                    )
 
                     if sent_message is not None:
                         chat_message = {
@@ -625,7 +628,7 @@ async def broadcast_chat_message(message):
         chat_viewers.discard(viewer)
 
 
-async def send_chat_message_to_discord(content):
+async def send_chat_message_to_discord(content, author_name):
     if not DISCORD_CHANNEL_ID:
         return None
 
@@ -644,7 +647,7 @@ async def send_chat_message_to_discord(content):
             return None
 
     try:
-        return await channel.send(content)
+        return await channel.send(f"**{author_name}:** {content}")
 
     except Exception as exc:
         print(
