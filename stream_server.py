@@ -286,6 +286,9 @@ async def viewer_stream(websocket: WebSocket):
     await websocket.accept()
     viewers[websocket] = set()
     chat_viewers.add(websocket)
+    session_user = _decode_session(
+        websocket.cookies.get(AUTH_COOKIE_NAME)
+    )
 
     try:
         await send_stream_list(websocket)
@@ -299,6 +302,13 @@ async def viewer_stream(websocket: WebSocket):
                 viewers[websocket] = subscriptions
 
             elif data.get("type") == "chat_send":
+                if not session_user:
+                    await websocket.send_text(json.dumps({
+                        "type": "chat_error",
+                        "message": "Please sign in with Discord to comment.",
+                    }))
+                    continue
+
                 content = str(data.get("content", "")).strip()
 
                 if content:
@@ -310,7 +320,9 @@ async def viewer_stream(websocket: WebSocket):
                     if sent_message is not None:
                         chat_message = {
                             "id": str(sent_message.id),
-                            "author": "Anonymous Monkey",
+                            "author": session_user.get(
+                                "username", "Discord user"
+                            ),
                             "content": sent_message.content,
                             "timestamp": sent_message.created_at.isoformat(),
                         }
@@ -1033,6 +1045,53 @@ const chatForm =
     document.getElementById("chat-form");
 const chatInput =
     document.getElementById("chat-input");
+
+const authStatusElement =
+    document.getElementById("auth-status");
+const authLoginElement =
+    document.getElementById("auth-login");
+const authLogoutElement =
+    document.getElementById("auth-logout");
+
+let authenticatedUser = null;
+
+function updateAuthenticationUI(user) {
+    authenticatedUser = user || null;
+    const authenticated = Boolean(authenticatedUser);
+
+    authStatusElement.textContent = authenticated
+        ? `Signed in as ${authenticatedUser.username}`
+        : "You are not signed in";
+    authLoginElement.style.display = authenticated ? "none" : "inline-block";
+    authLogoutElement.style.display = authenticated ? "inline-block" : "none";
+    chatInput.disabled = !authenticated;
+    chatInput.placeholder = authenticated
+        ? "Write a message..."
+        : "Sign in with Discord to comment";
+    chatForm.querySelector("button[type=submit]").disabled = !authenticated;
+}
+
+async function checkAuthentication() {
+    try {
+        const response = await fetch("/auth/me", {
+            credentials: "same-origin",
+            cache: "no-store",
+        });
+
+        if (!response.ok) {
+            throw new Error(`Authentication status ${response.status}`);
+        }
+
+        const data = await response.json();
+        updateAuthenticationUI(data.authenticated ? data.user : null);
+    } catch (error) {
+        console.error("Could not check Discord login:", error);
+        updateAuthenticationUI(null);
+        authStatusElement.textContent = "Unable to check Discord login";
+    }
+}
+
+checkAuthentication();
 
 const MAX_OPTIONS = {
     1:  [1, 1],
