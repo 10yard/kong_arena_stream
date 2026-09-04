@@ -23,6 +23,8 @@ discord_intents = discord.Intents.default()
 discord_intents.message_content = True
 discord_client = discord.Client(intents=discord_intents)
 discord_task = None
+chat_viewers = set()
+
 
 # stream_id -> stream information and latest frame
 streams = {}
@@ -127,9 +129,11 @@ async def client_stream(websocket: WebSocket):
 async def viewer_stream(websocket: WebSocket):
     await websocket.accept()
     viewers[websocket] = set()
+    chat_viewers.add(websocket)
 
     try:
         await send_stream_list(websocket)
+        await send_chat_history(websocket)
 
         while True:
             data = json.loads(await websocket.receive_text())
@@ -137,6 +141,13 @@ async def viewer_stream(websocket: WebSocket):
             if data.get("type") == "subscribe":
                 subscriptions = set(data.get("streams", []))
                 viewers[websocket] = subscriptions
+
+            elif data.get("type") == "chat_send":
+                content = str(data.get("content", "")).strip()
+                if content:
+                    if len(content) > 2000:
+                        content = content[:2000]
+                    await send_chat_message_to_discord(content)
 
                 # Send the latest frame immediately after subscribing.
                 for stream_id in subscriptions:
@@ -157,6 +168,7 @@ async def viewer_stream(websocket: WebSocket):
 
     finally:
         viewers.pop(websocket, None)
+        chat_viewers.discard(websocket)
 
 
 async def send_stream_list(websocket):
@@ -326,10 +338,86 @@ async def on_message(message):
     if message.channel.id != DISCORD_CHANNEL_ID:
         return
 
+    chat_message = {
+        "id": str(message.id),
+        "author": str(message.author.display_name),
+        "content": message.content,
+        "timestamp": message.created_at.isoformat(),
+    }
+
     print(
         f"[Discord] Message from {message.author}: {message.content}",
         flush=True,
     )
+    await broadcast_chat_message(chat_message)
+
+async def send_chat_history(websocket):
+    if not DISCORD_CHANNEL_ID:
+        return
+
+    channel = discord_client.get_channel(DISCORD_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await discord_client.fetch_channel(DISCORD_CHANNEL_ID)
+        except Exception as exc:
+            print(f"[Discord] Could not fetch chat channel: {exc}", flush=True)
+            return
+
+    try:
+        messages = []
+        async for message in channel.history(limit=50, oldest_first=True):
+            if message.author == discord_client.user:
+                continue
+            messages.append({
+                "id": str(message.id),
+                "author": str(message.author.display_name),
+                "content": message.content,
+                "timestamp": message.created_at.isoformat(),
+            })
+
+        await websocket.send_text(json.dumps({
+            "type": "chat_history",
+            "messages": messages,
+        }))
+    except Exception as exc:
+        print(f"[Discord] Could not load chat history: {exc}", flush=True)
+
+
+async def broadcast_chat_message(message):
+    payload = json.dumps({
+        "type": "chat_message",
+        "message": message,
+    })
+    dead = []
+    for viewer in list(chat_viewers):
+        try:
+            await viewer.send_text(payload)
+        except Exception:
+            dead.append(viewer)
+
+    for viewer in dead:
+        chat_viewers.discard(viewer)
+
+
+async def send_chat_message_to_discord(content):
+    if not DISCORD_CHANNEL_ID:
+        return False
+
+    channel = discord_client.get_channel(DISCORD_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await discord_client.fetch_channel(DISCORD_CHANNEL_ID)
+        except Exception as exc:
+            print(f"[Discord] Could not fetch chat channel: {exc}", flush=True)
+            return False
+
+    try:
+        await channel.send(content)
+        return True
+    except Exception as exc:
+        print(f"[Discord] Could not send chat message: {exc}", flush=True)
+        return False
+
 
 @app.get("/")
 async def home():
@@ -516,6 +604,119 @@ select,
     font-size: 20px;
 }
 
+#content {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+    min-width: 0;
+}
+
+#streams {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+#chat-panel {
+    display: flex;
+    flex: 0 0 320px;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    background: #171717;
+    border-left: 1px solid #555;
+}
+
+#chat-panel[hidden] {
+    display: none;
+}
+
+#chat-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 10px;
+    border-bottom: 1px solid #555;
+}
+
+#chat-header h2 {
+    margin: 0;
+    font-size: 18px;
+}
+
+#chat-close,
+#chat-open,
+#chat-send {
+    cursor: pointer;
+    font-size: 14px;
+    padding: 5px 9px;
+    background: #222;
+    color: white;
+    border: 1px solid #666;
+    border-radius: 5px;
+}
+
+#chat-open {
+    display: inline-block;
+}
+
+#chat-messages {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 10px;
+}
+
+.chat-message {
+    margin-bottom: 9px;
+    overflow-wrap: anywhere;
+}
+
+.chat-author {
+    font-weight: bold;
+    color: #9acbff;
+}
+
+.chat-time {
+    color: #888;
+    font-size: 11px;
+    margin-left: 5px;
+}
+
+.chat-content {
+    margin-top: 2px;
+    white-space: pre-wrap;
+}
+
+#chat-form {
+    display: flex;
+    gap: 6px;
+    padding: 10px;
+    border-top: 1px solid #555;
+}
+
+#chat-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 7px;
+    color: white;
+    background: #222;
+    border: 1px solid #666;
+    border-radius: 5px;
+}
+
+@media (max-width: 850px) {
+    #content {
+        flex-direction: column;
+    }
+
+    #chat-panel {
+        flex: 0 0 260px;
+        border-left: 0;
+        border-top: 1px solid #555;
+    }
+}
+
 @media (max-width: 850px) {
     #toolbar {
         align-items: flex-start;
@@ -555,6 +756,8 @@ select,
         <h1>Kong Arena Live View (Experimental)</h1>
 
         <div id="controls">
+
+            <button id="chat-open" type="button">Show chat</button>
 
             <button
                 id="back-button"
@@ -602,10 +805,24 @@ select,
         </div>
     </div>
 
-    <div id="streams">
-        <div id="empty-message">
-            Waiting for streams...
+    <div id="content">
+        <div id="streams">
+            <div id="empty-message">
+                Waiting for streams...
+            </div>
         </div>
+
+        <aside id="chat-panel" hidden>
+            <div id="chat-header">
+                <h2>Live chat</h2>
+                <button id="chat-close" type="button">Hide chat</button>
+            </div>
+            <div id="chat-messages" aria-live="polite"></div>
+            <form id="chat-form">
+                <input id="chat-input" maxlength="2000" autocomplete="off" placeholder="Write a message...">
+                <button id="chat-send" type="submit">Send</button>
+            </form>
+        </aside>
     </div>
 
 </div>
@@ -634,6 +851,19 @@ const maxStreamsElement =
 
 const backButton =
     document.getElementById("back-button");
+
+const chatOpenButton =
+    document.getElementById("chat-open");
+const chatCloseButton =
+    document.getElementById("chat-close");
+const chatPanel =
+    document.getElementById("chat-panel");
+const chatMessagesElement =
+    document.getElementById("chat-messages");
+const chatForm =
+    document.getElementById("chat-form");
+const chatInput =
+    document.getElementById("chat-input");
 
 const MAX_OPTIONS = {
     1:  [1, 1],
@@ -1034,6 +1264,59 @@ function updateStreams() {
 }
 
 
+function setChatVisible(visible) {
+    chatPanel.hidden = !visible;
+    chatOpenButton.hidden = visible;
+    if (visible) {
+        chatInput.focus();
+        chatMessagesElement.scrollTop = chatMessagesElement.scrollHeight;
+    }
+}
+
+function addChatMessage(message) {
+    const row = document.createElement("div");
+    row.className = "chat-message";
+
+    const author = document.createElement("span");
+    author.className = "chat-author";
+    author.textContent = message.author || "Unknown";
+
+    const time = document.createElement("span");
+    time.className = "chat-time";
+    if (message.timestamp) {
+        const date = new Date(message.timestamp);
+        time.textContent = date.toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+        });
+    }
+
+    const content = document.createElement("div");
+    content.className = "chat-content";
+    content.textContent = message.content || "";
+
+    row.append(author, time, content);
+    chatMessagesElement.appendChild(row);
+    chatMessagesElement.scrollTop = chatMessagesElement.scrollHeight;
+}
+
+chatOpenButton.addEventListener("click", () => setChatVisible(true));
+chatCloseButton.addEventListener("click", () => setChatVisible(false));
+
+chatForm.addEventListener("submit", event => {
+    event.preventDefault();
+    const content = chatInput.value.trim();
+    if (!content || ws.readyState !== WebSocket.OPEN) {
+        return;
+    }
+
+    ws.send(JSON.stringify({
+        type: "chat_send",
+        content,
+    }));
+    chatInput.value = "";
+});
+
 // Keep only the newest frame for each stream. If decoding/rendering
 // briefly falls behind, older frames are discarded rather than queued.
 const pendingFrames = new Map();
@@ -1132,7 +1415,16 @@ ws.onmessage = function(event) {
         const data =
             JSON.parse(event.data);
 
-        if (data.type === "streams") {
+        if (data.type === "chat_history") {
+            chatMessagesElement.replaceChildren();
+            for (const message of data.messages || []) {
+                addChatMessage(message);
+            }
+        }
+        else if (data.type === "chat_message") {
+            addChatMessage(data.message);
+        }
+        else if (data.type === "streams") {
             allStreams = data.streams;
 
             // The stream list is the authoritative state. Remove any
