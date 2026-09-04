@@ -561,7 +561,7 @@ async def refresh_chat_history():
         if channel is None:
             channel = await discord_client.fetch_channel(DISCORD_CHANNEL_ID)
         messages = []
-        async for message in channel.history(limit=100, oldest_first=True):
+        async for message in channel.history(limit=50, oldest_first=False):
             author = str(message.author.display_name)
             content = message.content
             if message.author == discord_client.user and content.startswith('**') and ':** ' in content:
@@ -1577,12 +1577,13 @@ function colourForUsername(username) {
     return `hsl(${hue}, 80%, 75%)`;
 }
 
-function createChatMessageElement(message) {
+function addChatMessage(message) {
     const row = document.createElement("div");
     row.className = "chat-message";
 
     const author = document.createElement("span");
     author.className = "chat-author";
+    
     const username = message.author || "Unknown";
     author.textContent = username;
     author.style.color = colourForUsername(username);
@@ -1602,20 +1603,7 @@ function createChatMessageElement(message) {
     content.textContent = message.content || "";
 
     row.append(author, time, content);
-    return row;
-}
-
-function renderChatHistory(messages) {
-    const fragment = document.createDocumentFragment();
-    for (const message of Array.isArray(messages) ? messages : []) {
-        fragment.appendChild(createChatMessageElement(message));
-    }
-    chatMessagesElement.replaceChildren(fragment);
-    chatMessagesElement.scrollTop = chatMessagesElement.scrollHeight;
-}
-
-function appendChatMessage(message) {
-    chatMessagesElement.appendChild(createChatMessageElement(message));
+    chatMessagesElement.appendChild(row);
     chatMessagesElement.scrollTop = chatMessagesElement.scrollHeight;
 }
 
@@ -1730,38 +1718,24 @@ maxStreamsElement.addEventListener(
 
 
 ws.onmessage = function(event) {
-    if (typeof event.data !== "string") {
-        if (expectedFrameStreamId) {
-            updateFrame(expectedFrameStreamId, event.data);
-            expectedFrameStreamId = null;
+    if (typeof event.data === "string") {
+        const data =
+            JSON.parse(event.data);
+
+        if (data.type === "chat_history") {
+            chatMessagesElement.replaceChildren();
+            for (const message of data.messages || []) {
+                addChatMessage(message);
+            }
         }
-        return;
-    }
-
-    let data;
-    try {
-        data = JSON.parse(event.data);
-    } catch (error) {
-        console.error("[WebSocket] Invalid JSON message", error);
-        return;
-    }
-
-    if (data.type === "chat_history") {
-        renderChatHistory(data.messages);
-        return;
-    }
-
-    if (data.type === "chat_error") {
-        alert(data.message || "Chat error");
-        return;
+        else if (data.type === "chat_error") {
+        alert(data.message);
     }
 
     if (data.type === "chat_message") {
-        appendChatMessage(data.message);
-        return;
-    }
-
-    if (data.type === "streams") {
+            addChatMessage(data.message);
+        }
+        else if (data.type === "streams") {
             allStreams = data.streams;
 
             // The stream list is the authoritative state. Remove any
@@ -1824,7 +1798,7 @@ ws.onmessage = function(event) {
             updateStreams();
         }
 
-        if (
+        else if (
             data.type === "frame" &&
             selectedStreamIds.includes(
                 data.stream_id
@@ -1833,6 +1807,16 @@ ws.onmessage = function(event) {
             expectedFrameStreamId =
                 data.stream_id;
         }
+    }
+
+    else if (expectedFrameStreamId) {
+        updateFrame(
+            expectedFrameStreamId,
+            event.data
+        );
+
+        expectedFrameStreamId = null;
+    }
 };
 
 
