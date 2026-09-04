@@ -675,17 +675,24 @@ body {
 }
 
 body {
+    display: flex;
+    flex-direction: column;
     background: #222;
     color: white;
     font-family: Arial, sans-serif;
     overflow: hidden;
 }
 
+#auth-bar {
+    flex: 0 0 auto;
+}
+
 #page {
     display: flex;
+    flex: 1 1 auto;
     flex-direction: column;
     width: 100%;
-    height: 100%;
+    min-height: 0;
 }
 
 #toolbar {
