@@ -555,6 +555,7 @@ async def start_discord_bot():
 
 @discord_client.event
 async def on_ready():
+    await refresh_chat_history()
     print(
         f"[Discord] Connected as {discord_client.user}; "
         f"watching channel {DISCORD_CHANNEL_ID}",
@@ -634,6 +635,9 @@ async def refresh_chat_history():
 async def chat_history_refresh_loop():
     while True:
         await asyncio.sleep(30)
+        if not discord_client.is_ready():
+            continue
+        print("[Discord] Periodic chat history refresh", flush=True)
         await refresh_chat_history()
 
 
