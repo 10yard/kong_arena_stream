@@ -143,22 +143,23 @@ async def viewer_stream(websocket: WebSocket):
                 viewers[websocket] = subscriptions
 
             elif data.get("type") == "chat_send":
-                content = str(data.get("content", "")).strip()
-                if content:
-                    if len(content) > 2000:
-                        content = content[:2000]
-                    await send_chat_message_to_discord(content)
+            content = str(data.get("content", "")).strip()
 
-                # Send the latest frame immediately after subscribing.
-                for stream_id in subscriptions:
-                    stream = streams.get(stream_id)
+            if content:
+                if len(content) > 2000:
+                    content = content[:2000]
 
-                    if stream and stream["frame"]:
-                        await websocket.send_text(json.dumps({
-                            "type": "frame",
-                            "stream_id": stream_id,
-                        }))
-                        await websocket.send_bytes(stream["frame"])
+                sent_message = await send_chat_message_to_discord(content)
+
+                if sent_message is not None:
+                    chat_message = {
+                        "id": str(sent_message.id),
+                        "author": str(sent_message.author.display_name),
+                        "content": sent_message.content,
+                        "timestamp": sent_message.created_at.isoformat(),
+                    }
+
+                    await broadcast_chat_message(chat_message)
 
     except WebSocketDisconnect:
         pass
@@ -401,23 +402,31 @@ async def broadcast_chat_message(message):
 
 async def send_chat_message_to_discord(content):
     if not DISCORD_CHANNEL_ID:
-        return False
+        return None
 
     channel = discord_client.get_channel(DISCORD_CHANNEL_ID)
+
     if channel is None:
         try:
-            channel = await discord_client.fetch_channel(DISCORD_CHANNEL_ID)
+            channel = await discord_client.fetch_channel(
+                DISCORD_CHANNEL_ID
+            )
         except Exception as exc:
-            print(f"[Discord] Could not fetch chat channel: {exc}", flush=True)
-            return False
+            print(
+                f"[Discord] Could not fetch chat channel: {exc}",
+                flush=True
+            )
+            return None
 
     try:
-        await channel.send(content)
-        return True
-    except Exception as exc:
-        print(f"[Discord] Could not send chat message: {exc}", flush=True)
-        return False
+        return await channel.send(content)
 
+    except Exception as exc:
+        print(
+            f"[Discord] Could not send chat message: {exc}",
+            flush=True
+        )
+        return None
 
 @app.get("/")
 async def home():
