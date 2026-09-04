@@ -343,6 +343,11 @@ async def viewer_stream(websocket: WebSocket):
     await websocket.accept()
     viewers[websocket] = set()
     chat_viewers.add(websocket)
+    print(
+        f"[Chat] Viewer connected: {len(chat_viewers)} chat viewer(s); "
+        f"client={websocket.client}",
+        flush=True,
+    )
     session_user = _decode_session(
         websocket.cookies.get(AUTH_COOKIE_NAME)
     )
@@ -396,6 +401,11 @@ async def viewer_stream(websocket: WebSocket):
     finally:
         viewers.pop(websocket, None)
         chat_viewers.discard(websocket)
+        print(
+            f"[Chat] Viewer disconnected: {len(chat_viewers)} chat viewer(s); "
+            f"client={websocket.client}",
+            flush=True,
+        )
 
 
 async def send_stream_list(websocket):
@@ -601,11 +611,38 @@ async def on_message(message):
 
 
 async def broadcast_chat_history():
-    payload = json.dumps({"type": "chat_history", "messages": chat_history_cache})
-    for viewer in list(chat_viewers):
+    payload = json.dumps({
+        "type": "chat_history",
+        "messages": chat_history_cache,
+    })
+    latest_id = (
+        chat_history_cache[-1]["id"]
+        if chat_history_cache
+        else "none"
+    )
+    viewers_snapshot = list(chat_viewers)
+
+    print(
+        f"[Chat] Broadcasting history: {len(chat_history_cache)} messages "
+        f"to {len(viewers_snapshot)} viewer(s); latest={latest_id}",
+        flush=True,
+    )
+
+    for viewer in viewers_snapshot:
         try:
             await viewer.send_text(payload)
-        except Exception:
+            print(
+                f"[Chat] History sent successfully to viewer "
+                f"client={viewer.client}",
+                flush=True,
+            )
+        except Exception as exc:
+            print(
+                f"[Chat] History send failed to viewer "
+                f"client={viewer.client}: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
             chat_viewers.discard(viewer)
 
 async def chat_history_refresh_loop():
@@ -617,10 +654,31 @@ async def chat_history_refresh_loop():
             print(f"[Discord] Periodic history refresh failed: {exc}", flush=True)
 
 async def send_chat_history(websocket):
-    await websocket.send_text(json.dumps({
-        "type": "chat_history",
-        "messages": list(chat_history_cache),
-    }))
+    messages = list(chat_history_cache)
+    latest_id = messages[-1]["id"] if messages else "none"
+    print(
+        f"[Chat] Sending initial history: {len(messages)} messages "
+        f"to viewer client={websocket.client}; latest={latest_id}",
+        flush=True,
+    )
+    try:
+        await websocket.send_text(json.dumps({
+            "type": "chat_history",
+            "messages": messages,
+        }))
+        print(
+            f"[Chat] Initial history sent successfully to viewer "
+            f"client={websocket.client}",
+            flush=True,
+        )
+    except Exception as exc:
+        print(
+            f"[Chat] Initial history send failed to viewer "
+            f"client={websocket.client}: "
+            f"{type(exc).__name__}: {exc}",
+            flush=True,
+        )
+        raise
 
 
 async def send_chat_message_to_discord(content, author_name):
@@ -1722,7 +1780,23 @@ ws.onmessage = function(event) {
         const data =
             JSON.parse(event.data);
 
+        console.log(
+            "[Chat] WebSocket message:",
+            data.type,
+            data.type === "chat_history"
+                ? `${data.messages?.length || 0} messages`
+                : data
+        );
+
         if (data.type === "chat_history") {
+            console.log(
+                "[Chat] Applying chat history:",
+                `${data.messages?.length || 0} messages`,
+                "latest=",
+                data.messages?.length
+                    ? data.messages[data.messages.length - 1].id
+                    : "none"
+            );
             chatMessagesElement.replaceChildren();
             for (const message of data.messages || []) {
                 addChatMessage(message);
@@ -1821,12 +1895,20 @@ ws.onmessage = function(event) {
 
 
 ws.onopen = function() {
-    console.log("Viewer connected");
+    console.log(
+        "[Chat] Viewer WebSocket connected:",
+        `${protocol}://${location.host}/ws/viewer`
+    );
 };
 
 
-ws.onclose = function() {
-    console.log("Viewer disconnected");
+ws.onclose = function(event) {
+    console.log(
+        "[Chat] Viewer WebSocket disconnected:",
+        "code=", event.code,
+        "reason=", event.reason,
+        "wasClean=", event.wasClean
+    );
 
     for (
         const streamId
