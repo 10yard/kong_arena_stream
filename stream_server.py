@@ -147,7 +147,14 @@ async def viewer_stream(websocket: WebSocket):
                 if content:
                     if len(content) > 2000:
                         content = content[:2000]
-                    await send_chat_message_to_discord(content)
+                    sent_message = await send_chat_message_to_discord(content)
+                    if sent_message is not None:
+                        await broadcast_chat_message({
+                            "id": str(sent_message.id),
+                            "author": "Website",
+                            "content": sent_message.content,
+                            "timestamp": sent_message.created_at.isoformat(),
+                        })
 
                 # Send the latest frame immediately after subscribing.
                 for stream_id in subscriptions:
@@ -401,7 +408,7 @@ async def broadcast_chat_message(message):
 
 async def send_chat_message_to_discord(content):
     if not DISCORD_CHANNEL_ID:
-        return False
+        return None
 
     channel = discord_client.get_channel(DISCORD_CHANNEL_ID)
     if channel is None:
@@ -409,14 +416,13 @@ async def send_chat_message_to_discord(content):
             channel = await discord_client.fetch_channel(DISCORD_CHANNEL_ID)
         except Exception as exc:
             print(f"[Discord] Could not fetch chat channel: {exc}", flush=True)
-            return False
+            return None
 
     try:
-        await channel.send(content)
-        return True
+        return await channel.send(content)
     except Exception as exc:
         print(f"[Discord] Could not send chat message: {exc}", flush=True)
-        return False
+        return None
 
 
 @app.get("/")
