@@ -1279,7 +1279,9 @@ function setChatVisible(visible) {
     chatPanel.hidden = !visible;
     chatOpenButton.hidden = visible;
     if (visible) {
-        chatInput.focus();
+        if (window.innerWidth > 768) {
+            chatInput.focus();
+        }
         chatMessagesElement.scrollTop = chatMessagesElement.scrollHeight;
     }
 }
