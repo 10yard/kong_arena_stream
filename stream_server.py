@@ -383,7 +383,7 @@ async def viewer_stream(websocket: WebSocket):
                             "author": session_user.get(
                                 "username", "Discord user"
                             ),
-                            "content": sent_message.content,
+                            "content": content,
                             "timestamp": sent_message.created_at.isoformat(),
                         }
 
