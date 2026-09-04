@@ -1,5 +1,5 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, FileResponse
 import json
 import time
 import asyncio
@@ -162,6 +162,9 @@ streams = {}
 # WebSocket -> set of subscribed stream IDs
 viewers = {}
 
+@app.get("/waiting.png")
+def waiting_image():
+    return FileResponse("waiting.png", media_type="image/png")
 
 @app.get("/auth/discord/login")
 async def discord_login():
@@ -1302,7 +1305,7 @@ function clearImage(tile) {
         delete tile.image.dataset.url;
     }
 
-    tile.image.removeAttribute("src");
+    tile.image.src = "/waiting.png";
 }
 
 
@@ -1341,6 +1344,7 @@ function createTile(stream) {
     const image = document.createElement("img");
     image.className = "stream-image";
     image.alt = stream.username;
+    image.src = "/waiting.png";
 
     imageWrap.appendChild(image);
     element.appendChild(name);
