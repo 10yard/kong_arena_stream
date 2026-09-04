@@ -432,6 +432,7 @@ async def home():
 <html>
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Kong Arena Live View (Experimental)</title>
 
 <style>
@@ -440,9 +441,16 @@ async def home():
 }
 
 html,
+html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+}
+
 body {
     width: 100%;
     height: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
     margin: 0;
 }
 
@@ -709,10 +717,13 @@ select,
     background: #222;
     border: 1px solid #666;
     border-radius: 5px;
+    font-size: 16px;
 }
 
 @media (max-width: 850px) {
     #content {
+        width: 100%;
+        overflow-x: hidden;
         flex-direction: column;
     }
 
@@ -1274,7 +1285,6 @@ function setChatVisible(visible) {
     chatPanel.hidden = !visible;
     chatOpenButton.hidden = visible;
     if (visible) {
-        chatInput.focus();
         chatMessagesElement.scrollTop = chatMessagesElement.scrollHeight;
     }
 }
