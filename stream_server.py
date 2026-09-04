@@ -378,16 +378,14 @@ async def viewer_stream(websocket: WebSocket):
                     )
 
                     if sent_message is not None:
-                        chat_message = {
-                            "id": str(sent_message.id),
-                            "author": session_user.get(
-                                "username", "Discord user"
-                            ),
-                            "content": content,
-                            "timestamp": sent_message.created_at.isoformat(),
-                        }
-
-                        await broadcast_chat_message(chat_message)
+                        try:
+                            await refresh_chat_history()
+                        except Exception as exc:
+                            print(
+                                f"[Discord] Sent-message history refresh failed: "
+                                f"{exc}",
+                                flush=True,
+                            )
 
     except WebSocketDisconnect:
         pass
@@ -592,12 +590,15 @@ async def on_ready():
 async def on_message(message):
     if message.channel.id != DISCORD_CHANNEL_ID:
         return
-    if message.author != discord_client.user:
-        await broadcast_chat_message({"id": str(message.id), "author": str(message.author.display_name), "content": message.content, "timestamp": message.created_at.isoformat()})
+
     try:
         await refresh_chat_history()
     except Exception as exc:
-        print(f"[Discord] Message-triggered history refresh failed: {exc}", flush=True)
+        print(
+            f"[Discord] Message-triggered history refresh failed: {exc}",
+            flush=True,
+        )
+
 
 async def broadcast_chat_history():
     payload = json.dumps({"type": "chat_history", "messages": chat_history_cache})
@@ -616,27 +617,10 @@ async def chat_history_refresh_loop():
             print(f"[Discord] Periodic history refresh failed: {exc}", flush=True)
 
 async def send_chat_history(websocket):
-    if not discord_client.is_ready():
-        return
-    if not chat_history_cache:
-        await refresh_chat_history()
-    await websocket.send_text(json.dumps({"type": "chat_history", "messages": chat_history_cache}))
-
-
-async def broadcast_chat_message(message):
-    payload = json.dumps({
-        "type": "chat_message",
-        "message": message,
-    })
-    dead = []
-    for viewer in list(chat_viewers):
-        try:
-            await viewer.send_text(payload)
-        except Exception:
-            dead.append(viewer)
-
-    for viewer in dead:
-        chat_viewers.discard(viewer)
+    await websocket.send_text(json.dumps({
+        "type": "chat_history",
+        "messages": list(chat_history_cache),
+    }))
 
 
 async def send_chat_message_to_discord(content, author_name):
