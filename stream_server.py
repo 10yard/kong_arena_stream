@@ -594,13 +594,24 @@ async def send_chat_history(websocket):
 
     try:
         messages = []
-        async for message in channel.history(limit=50, oldest_first=True):
+        async for message in channel.history(limit=100, oldest_first=True):
+            author = str(message.author.display_name)
+            content = message.content
+
+            # Website messages are sent by the bot, with the logged-in
+            # user's display name embedded as **Name:** message text.
+            # Split that prefix back out so refresh displays the same
+            # author and message content as live chat.
             if message.author == discord_client.user:
-                continue
+                if content.startswith("**") and ":** " in content:
+                    prefix, content = content[2:].split(":** ", 1)
+                    if prefix.strip():
+                        author = prefix.strip()
+
             messages.append({
                 "id": str(message.id),
-                "author": str(message.author.display_name),
-                "content": message.content,
+                "author": author,
+                "content": content,
                 "timestamp": message.created_at.isoformat(),
             })
 
