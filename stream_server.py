@@ -12,6 +12,7 @@ import base64
 import urllib.error
 import urllib.parse
 import urllib.request
+import httpx
 import discord
 
 from PIL import Image
@@ -65,32 +66,57 @@ def _decode_session(value):
         return None
 
 def _discord_request(url, data=None, headers=None):
-    if data is not None:
-        encoded_data = urllib.parse.urlencode(data).encode("utf-8")
-    else:
-        encoded_data = None
+    request_headers = {
+        "User-Agent": "KongArena/1.0",
+        "Accept": "application/json",
+    }
 
-    request = urllib.request.Request(
-        url,
-        data=encoded_data,
-        headers=headers or {},
-        method="POST" if data is not None else "GET",
-    )
+    if headers:
+        request_headers.update(headers)
 
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            return json.loads(response.read().decode("utf-8"))
+        if data is not None:
+            response = httpx.post(
+                url,
+                data=data,
+                headers=request_headers,
+                timeout=15.0,
+                follow_redirects=True,
+            )
+        else:
+            response = httpx.get(
+                url,
+                headers=request_headers,
+                timeout=15.0,
+                follow_redirects=True,
+            )
 
-    except urllib.error.HTTPError as exc:
-        error_body = exc.read().decode("utf-8", errors="replace")
+        if response.status_code >= 400:
+            print("[Auth] Discord request failed", flush=True)
+            print(f"[Auth] URL: {url}", flush=True)
+            print(f"[Auth] HTTP status: {response.status_code}", flush=True)
+            print(
+                f"[Auth] Response headers: {dict(response.headers)}",
+                flush=True,
+            )
+            print(
+                f"[Auth] Response body: {response.text}",
+                flush=True,
+            )
+            response.raise_for_status()
 
-        print("[Auth] Discord request failed", flush=True)
-        print(f"[Auth] URL: {url}", flush=True)
-        print(f"[Auth] HTTP status: {exc.code}", flush=True)
-        print(f"[Auth] Response headers: {dict(exc.headers)}", flush=True)
-        print(f"[Auth] Response body: {error_body}", flush=True)
+        return response.json()
 
+    except httpx.HTTPStatusError:
         raise
+    except httpx.RequestError as exc:
+        print(
+            f"[Auth] Discord network request failed: "
+            f"{type(exc).__name__}: {exc}",
+            flush=True,
+        )
+        raise
+
 
 async def exchange_discord_code(code):
     return await asyncio.to_thread(
@@ -175,10 +201,10 @@ async def discord_callback(request: Request):
         token = await exchange_discord_code(code)
         user = await fetch_discord_user(token["access_token"])
         guilds = await fetch_discord_guilds(token["access_token"])
-    except urllib.error.HTTPError as exc:
-        error_body = exc.read().decode("utf-8", errors="replace")
+    except httpx.HTTPStatusError as exc:
         print(
-            f"[Auth] Discord OAuth failed: HTTP {exc.code}: {error_body}",
+            f"[Auth] Discord OAuth failed: HTTP "
+            f"{exc.response.status_code}: {exc.response.text}",
             flush=True,
         )
         return JSONResponse({"error": "Discord login failed"}, status_code=502)
