@@ -1,10 +1,16 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 import json
 import time
 import asyncio
 import io
 import os
+import secrets
+import hmac
+import hashlib
+import base64
+import urllib.parse
+import urllib.request
 import discord
 
 from PIL import Image
@@ -19,6 +25,83 @@ app = FastAPI()
 # Discord set up
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DISCORD_CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID", "0"))
+DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
+DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
+DISCORD_REDIRECT_URI = os.getenv(
+    "DISCORD_REDIRECT_URI",
+    "https://live.kongarena.com/auth/discord/callback",
+)
+DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID", "1509176714792800406")
+AUTH_COOKIE_NAME = "kong_discord_session"
+AUTH_STATE_COOKIE_NAME = "kong_discord_oauth_state"
+AUTH_COOKIE_SECRET = os.getenv(
+    "AUTH_COOKIE_SECRET",
+    DISCORD_CLIENT_SECRET or "change-this-secret",
+)
+
+def _encode_session(user):
+    payload = base64.urlsafe_b64encode(
+        json.dumps(user, separators=(",", ":")).encode()
+    ).decode().rstrip("=")
+    signature = hmac.new(
+        AUTH_COOKIE_SECRET.encode(), payload.encode(), hashlib.sha256
+    ).hexdigest()
+    return f"{payload}.{signature}"
+
+def _decode_session(value):
+    if not value or "." not in value:
+        return None
+    payload, signature = value.rsplit(".", 1)
+    expected = hmac.new(
+        AUTH_COOKIE_SECRET.encode(), payload.encode(), hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return None
+    try:
+        padded = payload + "=" * (-len(payload) % 4)
+        return json.loads(base64.urlsafe_b64decode(padded).decode())
+    except Exception:
+        return None
+
+def _discord_request(url, data=None, headers=None):
+    encoded = None
+    if data is not None:
+        encoded = urllib.parse.urlencode(data).encode()
+    request = urllib.request.Request(url, data=encoded, headers=headers or {})
+    with urllib.request.urlopen(request, timeout=15) as response:
+        return json.loads(response.read().decode())
+
+async def exchange_discord_code(code):
+    return await asyncio.to_thread(
+        _discord_request,
+        "https://discord.com/api/oauth2/token",
+        {
+            "client_id": DISCORD_CLIENT_ID,
+            "client_secret": DISCORD_CLIENT_SECRET,
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": DISCORD_REDIRECT_URI,
+        },
+        {"Content-Type": "application/x-www-form-urlencoded"},
+    )
+
+async def fetch_discord_user(access_token):
+    return await asyncio.to_thread(
+        _discord_request,
+        "https://discord.com/api/users/@me",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+
+async def fetch_discord_guilds(access_token):
+    return await asyncio.to_thread(
+        _discord_request,
+        "https://discord.com/api/users/@me/guilds",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+
+def get_session_from_request(request):
+    return _decode_session(request.cookies.get(AUTH_COOKIE_NAME))
+
 discord_intents = discord.Intents.default()
 discord_intents.message_content = True
 discord_client = discord.Client(intents=discord_intents)
@@ -32,6 +115,79 @@ streams = {}
 # WebSocket -> set of subscribed stream IDs
 viewers = {}
 
+
+@app.get("/auth/discord/login")
+async def discord_login():
+    if not DISCORD_CLIENT_ID or not DISCORD_CLIENT_SECRET:
+        return JSONResponse(
+            {"error": "Discord OAuth is not configured"},
+            status_code=503,
+        )
+    state = secrets.token_urlsafe(32)
+    params = urllib.parse.urlencode({
+        "client_id": DISCORD_CLIENT_ID,
+        "response_type": "code",
+        "redirect_uri": DISCORD_REDIRECT_URI,
+        "scope": "identify guilds",
+        "state": state,
+        "prompt": "consent",
+    })
+    response = RedirectResponse(
+        f"https://discord.com/oauth2/authorize?{params}"
+    )
+    response.set_cookie(
+        AUTH_STATE_COOKIE_NAME, state, httponly=True,
+        secure=True, samesite="lax", max_age=600
+    )
+    return response
+
+@app.get("/auth/discord/callback")
+async def discord_callback(request: Request):
+    code = request.query_params.get("code")
+    state = request.query_params.get("state")
+    saved_state = request.cookies.get(AUTH_STATE_COOKIE_NAME)
+    if not code or not state or not saved_state or not hmac.compare_digest(
+        state, saved_state
+    ):
+        return JSONResponse({"error": "Invalid Discord login state"}, status_code=400)
+    try:
+        token = await exchange_discord_code(code)
+        user = await fetch_discord_user(token["access_token"])
+        guilds = await fetch_discord_guilds(token["access_token"])
+    except Exception as exc:
+        print(f"[Auth] Discord OAuth failed: {exc}", flush=True)
+        return JSONResponse({"error": "Discord login failed"}, status_code=502)
+
+    if not any(str(guild.get("id")) == str(DISCORD_GUILD_ID) for guild in guilds):
+        return HTMLResponse(
+            "<h1>Discord server membership required</h1>"
+            "<p>You must be a member of the Kong Arena Discord server to comment.</p>",
+            status_code=403,
+        )
+
+    session_user = {
+        "id": str(user["id"]),
+        "username": user.get("global_name") or user.get("username") or "Discord user",
+        "avatar": user.get("avatar"),
+    }
+    response = RedirectResponse("/", status_code=303)
+    response.set_cookie(
+        AUTH_COOKIE_NAME, _encode_session(session_user),
+        httponly=True, secure=True, samesite="lax", max_age=604800
+    )
+    response.delete_cookie(AUTH_STATE_COOKIE_NAME)
+    return response
+
+@app.get("/auth/me")
+async def auth_me(request: Request):
+    user = get_session_from_request(request)
+    return {"authenticated": bool(user), "user": user}
+
+@app.get("/auth/logout")
+async def auth_logout():
+    response = RedirectResponse("/", status_code=303)
+    response.delete_cookie(AUTH_COOKIE_NAME)
+    return response
 
 @app.websocket("/ws/client")
 async def client_stream(websocket: WebSocket):
@@ -757,6 +913,11 @@ select,
 </head>
 
 <body>
+<div id="auth-bar" style="display:flex;justify-content:flex-end;gap:10px;align-items:center;padding:8px 12px;">
+    <span id="auth-status">Checking Discord login...</span>
+    <a id="auth-login" href="/auth/discord/login" style="display:none;">Sign in with Discord</a>
+    <a id="auth-logout" href="/auth/logout" style="display:none;">Sign out</a>
+</div>
 
 <div id="page">
 
@@ -1446,7 +1607,11 @@ ws.onmessage = function(event) {
                 addChatMessage(message);
             }
         }
-        else if (data.type === "chat_message") {
+        else if (data.type === "chat_error") {
+        alert(data.message);
+    }
+
+    if (data.type === "chat_message") {
             addChatMessage(data.message);
         }
         else if (data.type === "streams") {
