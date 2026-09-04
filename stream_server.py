@@ -154,9 +154,6 @@ discord_intents.message_content = True
 discord_client = discord.Client(intents=discord_intents)
 discord_task = None
 chat_viewers = set()
-chat_history_cache = []
-chat_history_last_refresh = 0.0
-chat_history_refresh_lock = asyncio.Lock()
 
 
 # stream_id -> stream information and latest frame
@@ -553,97 +550,76 @@ async def start_discord_bot():
         print(f"[Discord] Connection failed: {exc}", flush=True)
 
 
+chat_history_cache = []
+chat_history_last_refresh = 0.0
+chat_history_refresh_lock = asyncio.Lock()
+
+async def refresh_chat_history():
+    global chat_history_cache, chat_history_last_refresh
+    if not DISCORD_CHANNEL_ID or not discord_client.is_ready():
+        return
+    async with chat_history_refresh_lock:
+        channel = discord_client.get_channel(DISCORD_CHANNEL_ID)
+        if channel is None:
+            channel = await discord_client.fetch_channel(DISCORD_CHANNEL_ID)
+        messages = []
+        async for message in channel.history(limit=100, oldest_first=True):
+            author = str(message.author.display_name)
+            content = message.content
+            if message.author == discord_client.user and content.startswith('**') and ':** ' in content:
+                name, content = content[2:].split(':** ', 1)
+                author = name
+            messages.append({
+                "id": str(message.id),
+                "author": author,
+                "content": content,
+                "timestamp": message.created_at.isoformat(),
+            })
+        chat_history_cache = messages
+        chat_history_last_refresh = time.monotonic()
+        print(f"[Discord] History refreshed: {len(messages)} messages; latest={messages[-1]['id'] if messages else 'none'}", flush=True)
+        await broadcast_chat_history()
+
 @discord_client.event
 async def on_ready():
-    await refresh_chat_history()
-    print(
-        f"[Discord] Connected as {discord_client.user}; "
-        f"watching channel {DISCORD_CHANNEL_ID}",
-        flush=True,
-    )
-
+    print(f"[Discord] Connected as {discord_client.user}; watching channel {DISCORD_CHANNEL_ID}", flush=True)
+    try:
+        await refresh_chat_history()
+    except Exception as exc:
+        print(f"[Discord] Initial history refresh failed: {exc}", flush=True)
 
 @discord_client.event
 async def on_message(message):
     if message.channel.id != DISCORD_CHANNEL_ID:
         return
-
     if message.author != discord_client.user:
-        chat_message = {
-            "id": str(message.id),
-            "author": str(message.author.display_name),
-            "content": message.content,
-            "timestamp": message.created_at.isoformat(),
-        }
-        await broadcast_chat_message(chat_message)
-
-    # Refresh history promptly, but avoid repeated Discord requests during bursts.
-    if time.monotonic() - chat_history_last_refresh >= 10:
+        await broadcast_chat_message({"id": str(message.id), "author": str(message.author.display_name), "content": message.content, "timestamp": message.created_at.isoformat()})
+    try:
         await refresh_chat_history()
-
-
-async def get_chat_history():
-    global chat_history_cache, chat_history_last_refresh
-
-    if not DISCORD_CHANNEL_ID:
-        return chat_history_cache
-
-    async with chat_history_refresh_lock:
-        channel = discord_client.get_channel(DISCORD_CHANNEL_ID)
-        if channel is None:
-            try:
-                channel = await discord_client.fetch_channel(DISCORD_CHANNEL_ID)
-            except Exception as exc:
-                print(f"[Discord] Could not fetch chat channel: {exc}", flush=True)
-                return chat_history_cache
-
-        try:
-            messages = []
-            async for message in channel.history(limit=100, oldest_first=True):
-                author = str(message.author.display_name)
-                content = message.content
-                if message.author == discord_client.user and content.startswith("**") and ":** " in content:
-                    prefix, content = content[2:].split(":** ", 1)
-                    if prefix.strip():
-                        author = prefix.strip()
-                messages.append({"id": str(message.id), "author": author, "content": content,
-                                 "timestamp": message.created_at.isoformat()})
-            chat_history_cache = messages
-            chat_history_last_refresh = time.monotonic()
-        except Exception as exc:
-            print(f"[Discord] Could not load chat history: {exc}", flush=True)
-        return chat_history_cache
-
+    except Exception as exc:
+        print(f"[Discord] Message-triggered history refresh failed: {exc}", flush=True)
 
 async def broadcast_chat_history():
     payload = json.dumps({"type": "chat_history", "messages": chat_history_cache})
-    dead = []
     for viewer in list(chat_viewers):
         try:
             await viewer.send_text(payload)
         except Exception:
-            dead.append(viewer)
-    for viewer in dead:
-        chat_viewers.discard(viewer)
-
-
-async def refresh_chat_history():
-    await get_chat_history()
-    await broadcast_chat_history()
-
+            chat_viewers.discard(viewer)
 
 async def chat_history_refresh_loop():
     while True:
-        await asyncio.sleep(30)
-        if not discord_client.is_ready():
-            continue
-        print("[Discord] Periodic chat history refresh", flush=True)
-        await refresh_chat_history()
-
+        await asyncio.sleep(10)
+        try:
+            await refresh_chat_history()
+        except Exception as exc:
+            print(f"[Discord] Periodic history refresh failed: {exc}", flush=True)
 
 async def send_chat_history(websocket):
+    if not discord_client.is_ready():
+        return
     if not chat_history_cache:
-        await get_chat_history()
+        await refresh_chat_history()
     await websocket.send_text(json.dumps({"type": "chat_history", "messages": chat_history_cache}))
 
 
