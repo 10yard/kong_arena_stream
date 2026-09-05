@@ -27,6 +27,8 @@ app = FastAPI()
 # Discord set up
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DISCORD_CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID", "0"))
+DISCORD_SCORES_CHANNEL_ID = int(os.getenv("DISCORD_SCORES_CHANNEL_ID", "0"))
+SCORE_MONKEY_NAME = "Score Monkey !"
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 DISCORD_REDIRECT_URI = os.getenv(
@@ -560,29 +562,31 @@ async def refresh_chat_history():
     if not DISCORD_CHANNEL_ID or not discord_client.is_ready():
         return
     async with chat_history_refresh_lock:
-        channel = discord_client.get_channel(DISCORD_CHANNEL_ID)
-        if channel is None:
-            channel = await discord_client.fetch_channel(DISCORD_CHANNEL_ID)
         messages = []
-        async for message in channel.history(limit=50, oldest_first=False):
-            author = str(message.author.display_name)
-            content = message.content
-            if message.author == discord_client.user and content.startswith('**') and ':** ' in content:
-                name, content = content[2:].split(':** ', 1)
-                author = name
-            messages.append({
-                "id": str(message.id),
-                "author": author,
-                "content": content,
-                "timestamp": message.created_at.isoformat(),
-            })
 
-        # Discord returns newest-first; reverse the collected list for display.
-        messages.reverse()
-        chat_history_cache = messages
+        async def collect(channel_id, scores_only=False):
+            if not channel_id:
+                return
+            channel = discord_client.get_channel(channel_id)
+            if channel is None:
+                channel = await discord_client.fetch_channel(channel_id)
+            async for message in channel.history(limit=50, oldest_first=False):
+                author = str(message.author.display_name)
+                content = message.content
+                if scores_only and author != SCORE_MONKEY_NAME:
+                    continue
+                if message.author == discord_client.user and content.startswith("**") and ":** " in content:
+                    author, content = content[2:].split(":** ", 1)
+                messages.append({"id": str(message.id), "author": author, "content": content, "timestamp": message.created_at.isoformat()})
+
+        await collect(DISCORD_CHANNEL_ID)
+        await collect(DISCORD_SCORES_CHANNEL_ID, scores_only=True)
+        unique = {message["id"]: message for message in messages}
+        chat_history_cache = sorted(unique.values(), key=lambda m: m["timestamp"])[-50:]
         chat_history_last_refresh = time.monotonic()
-        print(f"[Discord] History refreshed: {len(messages)} messages; latest={messages[-1]['id'] if messages else 'none'}", flush=True)
+        print(f"[Discord] History refreshed: {len(chat_history_cache)} messages; latest={chat_history_cache[-1]['id'] if chat_history_cache else 'none'}", flush=True)
         await broadcast_chat_history()
+
 
 @discord_client.event
 async def on_ready():
@@ -594,7 +598,7 @@ async def on_ready():
 
 @discord_client.event
 async def on_message(message):
-    if message.channel.id != DISCORD_CHANNEL_ID:
+    if message.channel.id not in {DISCORD_CHANNEL_ID, DISCORD_SCORES_CHANNEL_ID}:
         return
 
     try:
@@ -1030,7 +1034,7 @@ select,
 
             <div class="control-group">
                 <label for="tournament-filter">
-                    Filter:
+                    Game:
                 </label>
 
                 <select id="tournament-filter">
