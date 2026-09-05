@@ -1006,7 +1006,7 @@ select,
 
         <div id="controls">
 
-            <button id="chat-open" type="button" hidden>Show chat</button>
+            <button id="chat-open" type="button">Hide Chat</button>
 
             <button
                 id="back-button"
@@ -1064,8 +1064,7 @@ select,
         <aside id="chat-panel">
             <div id="chat-header">
                 <h2>Live chat</h2>
-                <button id="chat-close" type="button">Hide chat</button>
-            </div>
+                            </div>
             <div id="chat-messages" aria-live="polite"></div>
             <form id="chat-form">
                 <input id="chat-input" maxlength="2000" autocomplete="off" placeholder="Write a message...">
@@ -1103,8 +1102,6 @@ const backButton =
 
 const chatOpenButton =
     document.getElementById("chat-open");
-const chatCloseButton =
-    document.getElementById("chat-close");
 const chatPanel =
     document.getElementById("chat-panel");
 const chatMessagesElement =
@@ -1563,9 +1560,14 @@ function updateStreams() {
 
 function setChatVisible(visible) {
     chatPanel.hidden = !visible;
-    chatOpenButton.hidden = visible;
+    chatOpenButton.hidden = false;
+    chatOpenButton.textContent = visible
+        ? "Hide Chat"
+        : "Show Chat";
+
     if (visible) {
-        chatMessagesElement.scrollTop = chatMessagesElement.scrollHeight;
+        chatMessagesElement.scrollTop =
+            chatMessagesElement.scrollHeight;
     }
 }
 
@@ -1614,8 +1616,9 @@ function addChatMessage(message) {
     chatMessagesElement.scrollTop = chatMessagesElement.scrollHeight;
 }
 
-chatOpenButton.addEventListener("click", () => setChatVisible(true));
-chatCloseButton.addEventListener("click", () => setChatVisible(false));
+chatOpenButton.addEventListener("click", () => {
+    setChatVisible(chatPanel.hidden);
+});
 
 chatForm.addEventListener("submit", event => {
     event.preventDefault();
