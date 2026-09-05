@@ -1627,7 +1627,21 @@ function addChatMessage(message) {
 
     const content = document.createElement("div");
     content.className = "chat-content";
-    content.textContent = message.content || "";
+    const messageText = message.content || "";
+    if (username === "Score Monkey !") {
+        // Render Discord-style **bold** markers for score updates as real HTML,
+        // while escaping all other text so message content remains safe.
+        const escaped = messageText.replace(/[&<>"']/g, (character) => ({
+            "&": "&amp;",
+            "<": "&lt;",
+            ">": "&gt;",
+            '"': "&quot;",
+            "'": "&#39;",
+        })[character]);
+        content.innerHTML = escaped.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+    } else {
+        content.textContent = messageText;
+    }
 
     row.append(author, time, content);
     chatMessagesElement.appendChild(row);
