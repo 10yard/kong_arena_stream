@@ -1043,7 +1043,7 @@ select,
 
             <div class="control-group">
                 <label for="max-streams">
-                    Max streams:
+                    Limit:
                 </label>
 
                 <select id="max-streams">
