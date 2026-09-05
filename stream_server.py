@@ -862,14 +862,14 @@ select,
 }
 
 #tournament-filter {
-    width: 150px;
+    width: 160px;
     max-width: 150px;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
 #player-filter {
-    width: 150px;
+    width: 130px;
     max-width: 150px;
     overflow: hidden;
     text-overflow: ellipsis;
