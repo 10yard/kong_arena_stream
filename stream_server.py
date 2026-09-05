@@ -861,6 +861,13 @@ select,
     min-width: 0;
 }
 
+#tournament-filter {
+    width: 180px;
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 #chat-panel {
     display: flex;
     flex: 0 0 320px;
@@ -1016,7 +1023,7 @@ select,
 
             <div class="control-group">
                 <label for="tournament-filter">
-                    Game Filter:
+                    Filter:
                 </label>
 
                 <select id="tournament-filter">
