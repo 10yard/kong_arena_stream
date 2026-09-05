@@ -1018,7 +1018,6 @@ select,
 </div>
 
 <div id="page">
-
     <div id="toolbar">
         <h1>Kong Arena Live</h1>
 
@@ -1054,7 +1053,7 @@ select,
 
             <div class="control-group">
                 <label for="max-streams">
-                    Limit:
+                    Max:
                 </label>
 
                 <select id="max-streams">
