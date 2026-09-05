@@ -1006,8 +1006,6 @@ select,
 
         <div id="controls">
 
-            <button id="chat-open" type="button">Hide Chat</button>
-
             <button
                 id="back-button"
                 type="button"
@@ -1050,6 +1048,8 @@ select,
                     <option value="8">8</option>
                 </select>
             </div>
+
+            <button id="chat-open" type="button">Hide Chat</button>
 
         </div>
     </div>
