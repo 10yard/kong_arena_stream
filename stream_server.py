@@ -168,6 +168,10 @@ viewers = {}
 def waiting_image():
     return FileResponse("waiting.png", media_type="image/png")
 
+@app.get("/waiting_progress.png")
+def waiting_progress_image():
+    return FileResponse("waiting_progress.png", media_type="image/png")
+
 @app.get("/auth/discord/login")
 async def discord_login():
     if not DISCORD_CLIENT_ID or not DISCORD_CLIENT_SECRET:
