@@ -655,7 +655,7 @@ async def broadcast_chat_history():
 
 async def chat_history_refresh_loop():
     while True:
-        await asyncio.sleep(10)
+        await asyncio.sleep(30)
         try:
             await refresh_chat_history()
         except Exception as exc:
