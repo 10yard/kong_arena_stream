@@ -366,16 +366,24 @@ async def viewer_stream(websocket: WebSocket):
                 viewers[websocket] = subscriptions
 
             elif data.get("type") == "pause_frames":
-                paused_frame_viewers.add(websocket)
+                if websocket not in paused_frame_viewers:
+                    paused_frame_viewers.add(websocket)
+                    print(f"[VISIBILITY] viewer={id(websocket)} frames PAUSED", flush=True)
 
             elif data.get("type") == "resume_frames":
-                paused_frame_viewers.discard(websocket)
+                if websocket in paused_frame_viewers:
+                    paused_frame_viewers.discard(websocket)
+                    print(f"[VISIBILITY] viewer={id(websocket)} frames RESUMED", flush=True)
 
             elif data.get("type") == "pause_chat":
-                paused_chat_viewers.add(websocket)
+                if websocket not in paused_chat_viewers:
+                    paused_chat_viewers.add(websocket)
+                    print(f"[VISIBILITY] viewer={id(websocket)} chat PAUSED", flush=True)
 
             elif data.get("type") == "resume_chat":
-                paused_chat_viewers.discard(websocket)
+                if websocket in paused_chat_viewers:
+                    paused_chat_viewers.discard(websocket)
+                    print(f"[VISIBILITY] viewer={id(websocket)} chat RESUMED", flush=True)
                 await send_chat_history(websocket)
 
             elif data.get("type") == "chat_send":
@@ -416,8 +424,15 @@ async def viewer_stream(websocket: WebSocket):
     finally:
         viewers.pop(websocket, None)
         chat_viewers.discard(websocket)
+        was_frame_paused = websocket in paused_frame_viewers
+        was_chat_paused = websocket in paused_chat_viewers
         paused_frame_viewers.discard(websocket)
         paused_chat_viewers.discard(websocket)
+        print(
+            f"[VISIBILITY] viewer={id(websocket)} disconnected "
+            f"(frames_paused={was_frame_paused}, chat_paused={was_chat_paused})",
+            flush=True,
+        )
 
 
 async def send_stream_list(websocket):
