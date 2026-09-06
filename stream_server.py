@@ -20,9 +20,6 @@ from PIL import Image
 STALE_STREAM_TIMEOUT = 30
 PROGRESS_STALE_STREAM_TIMEOUT = 180
 
-# Browser inactivity timeout, in minutes.
-IDLE_TIMEOUT_MINUTES = 2
-
 PROGRESS_OVERLAY = Image.open("progress.png").convert("RGBA")
 
 app = FastAPI()
@@ -898,93 +895,6 @@ select,
     min-width: 0;
 }
 
-
-/* Inactivity pause overlay */
-#page {
-    position: relative;
-}
-
-#idle-overlay {
-    position: absolute;
-    inset: 0;
-    z-index: 1000;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 24px;
-    background: rgba(0, 0, 0, 0.78);
-    backdrop-filter: blur(3px);
-    -webkit-backdrop-filter: blur(3px);
-}
-
-#idle-overlay[hidden] {
-    display: none;
-}
-
-#idle-dialog {
-    width: min(100%, 420px);
-    padding: 28px 30px;
-    text-align: center;
-    background: #202020;
-    color: #fff;
-    border: 1px solid #666;
-    border-radius: 12px;
-    box-shadow: 0 10px 35px rgba(0, 0, 0, 0.65);
-}
-
-#idle-dialog h2 {
-    margin: 0 0 10px;
-    font-size: 24px;
-    line-height: 1.2;
-}
-
-#idle-dialog p {
-    margin: 0 0 22px;
-    color: #d0d0d0;
-    font-size: 15px;
-    line-height: 1.5;
-}
-
-#continue-watching {
-    min-width: 180px;
-    padding: 10px 18px;
-    border: 1px solid #9acb9a;
-    border-radius: 6px;
-    background: #466b46;
-    color: #fff;
-    font-size: 15px;
-    font-weight: bold;
-    cursor: pointer;
-}
-
-#continue-watching:hover {
-    background: #568b56;
-}
-
-#continue-watching:focus-visible {
-    outline: 3px solid #b9e6ff;
-    outline-offset: 3px;
-}
-
-@media (max-width: 600px) {
-    #idle-overlay {
-        padding: 16px;
-    }
-
-    #idle-dialog {
-        padding: 24px 20px;
-    }
-
-    #idle-dialog h2 {
-        font-size: 21px;
-    }
-
-    #continue-watching {
-        width: 100%;
-    }
-}
-
-
 #streams {
     flex: 1 1 auto;
     min-width: 0;
@@ -1196,14 +1106,6 @@ select,
         </div>
     </div>
 
-    <div id="idle-overlay" hidden>
-        <div id="idle-dialog" role="dialog" aria-modal="true" aria-labelledby="idle-title">
-            <h2 id="idle-title">Stream paused</h2>
-            <p>This page has been inactive for a while.</p>
-            <button id="continue-watching" type="button">Continue watching</button>
-        </div>
-    </div>
-
     <div id="content">
         <div id="streams">
             <div id="empty-message">
@@ -1240,48 +1142,14 @@ function updateVisibilityPauseState() {
         return;
     }
 
-    sendViewerPauseState();
-}
-
-function sendViewerPauseState() {
-    if (ws.readyState !== WebSocket.OPEN) {
-        return;
-    }
-
-    const pauseFrames = document.hidden || idlePaused;
-    const pauseChat = document.hidden || idlePaused;
+    const hidden = document.hidden;
     ws.send(JSON.stringify({
-        type: pauseFrames ? "pause_frames" : "resume_frames"
+        type: hidden ? "pause_frames" : "resume_frames"
     }));
     ws.send(JSON.stringify({
-        type: pauseChat ? "pause_chat" : "resume_chat"
+        type: hidden ? "pause_chat" : "resume_chat"
     }));
 }
-
-function resetIdleTimer() {
-    if (idlePaused) {
-        return;
-    }
-    clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => {
-        idlePaused = true;
-        idleOverlay.hidden = false;
-        sendViewerPauseState();
-    }, IDLE_TIMEOUT_MS);
-}
-
-function continueWatching() {
-    idlePaused = false;
-    idleOverlay.hidden = true;
-    resetIdleTimer();
-    sendViewerPauseState();
-}
-
-continueWatchingButton.addEventListener("click", continueWatching);
-["click", "keydown", "scroll", "touchstart"].forEach(eventName => {
-    document.addEventListener(eventName, resetIdleTimer, { passive: true });
-});
-resetIdleTimer();
 
 document.addEventListener(
     "visibilitychange",
@@ -1320,14 +1188,6 @@ const authLoginElement =
     document.getElementById("auth-login");
 const authLogoutElement =
     document.getElementById("auth-logout");
-
-const idleOverlay =
-    document.getElementById("idle-overlay");
-const continueWatchingButton =
-    document.getElementById("continue-watching");
-const IDLE_TIMEOUT_MS = 2 * 60 * 1000;
-let idleTimer = null;
-let idlePaused = false;
 
 let authenticatedUser = null;
 
@@ -2057,7 +1917,7 @@ ws.onmessage = function(event) {
 
 ws.onopen = function() {
     console.log("Viewer connected");
-    sendViewerPauseState();
+    updateVisibilityPauseState();
 };
 
 
