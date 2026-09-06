@@ -156,6 +156,8 @@ discord_intents.message_content = True
 discord_client = discord.Client(intents=discord_intents)
 discord_task = None
 chat_viewers = set()
+paused_frame_viewers = set()
+paused_chat_viewers = set()
 
 
 # stream_id -> stream information and latest frame
@@ -363,6 +365,19 @@ async def viewer_stream(websocket: WebSocket):
                 subscriptions = set(data.get("streams", []))
                 viewers[websocket] = subscriptions
 
+            elif data.get("type") == "pause_frames":
+                paused_frame_viewers.add(websocket)
+
+            elif data.get("type") == "resume_frames":
+                paused_frame_viewers.discard(websocket)
+
+            elif data.get("type") == "pause_chat":
+                paused_chat_viewers.add(websocket)
+
+            elif data.get("type") == "resume_chat":
+                paused_chat_viewers.discard(websocket)
+                await send_chat_history(websocket)
+
             elif data.get("type") == "chat_send":
                 if not session_user:
                     await websocket.send_text(json.dumps({
@@ -401,6 +416,8 @@ async def viewer_stream(websocket: WebSocket):
     finally:
         viewers.pop(websocket, None)
         chat_viewers.discard(websocket)
+        paused_frame_viewers.discard(websocket)
+        paused_chat_viewers.discard(websocket)
 
 
 async def send_stream_list(websocket):
@@ -453,6 +470,7 @@ async def broadcast_frame(stream_id, frame):
         viewer
         for viewer, subscriptions in list(viewers.items())
         if stream_id in subscriptions
+        and viewer not in paused_frame_viewers
     ]
 
     async def send_frame(viewer):
@@ -613,6 +631,8 @@ async def on_message(message):
 async def broadcast_chat_history():
     payload = json.dumps({"type": "chat_history", "messages": chat_history_cache})
     for viewer in list(chat_viewers):
+        if viewer in paused_chat_viewers:
+            continue
         try:
             await viewer.send_text(payload)
         except Exception:
@@ -1101,6 +1121,25 @@ const ws = new WebSocket(
 );
 
 ws.binaryType = "blob";
+
+function updateVisibilityPauseState() {
+    if (ws.readyState !== WebSocket.OPEN) {
+        return;
+    }
+
+    const hidden = document.hidden;
+    ws.send(JSON.stringify({
+        type: hidden ? "pause_frames" : "resume_frames"
+    }));
+    ws.send(JSON.stringify({
+        type: hidden ? "pause_chat" : "resume_chat"
+    }));
+}
+
+document.addEventListener(
+    "visibilitychange",
+    updateVisibilityPauseState
+);
 
 const streamsElement =
     document.getElementById("streams");
@@ -1863,6 +1902,7 @@ ws.onmessage = function(event) {
 
 ws.onopen = function() {
     console.log("Viewer connected");
+    updateVisibilityPauseState();
 };
 
 
