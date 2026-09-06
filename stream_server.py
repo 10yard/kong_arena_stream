@@ -1325,7 +1325,7 @@ const idleOverlay =
     document.getElementById("idle-overlay");
 const continueWatchingButton =
     document.getElementById("continue-watching");
-const IDLE_TIMEOUT_MS = IDLE_TIMEOUT_MINUTES * 60 * 1000;
+const IDLE_TIMEOUT_MS = 2 * 60 * 1000;
 let idleTimer = null;
 let idlePaused = false;
 
