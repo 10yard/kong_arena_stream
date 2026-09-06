@@ -38,12 +38,10 @@ DISCORD_REDIRECT_URI = os.getenv(
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID", "1509176714792800406")
 AUTH_COOKIE_NAME = "kong_discord_session"
 AUTH_STATE_COOKIE_NAME = "kong_discord_oauth_state"
-AUTH_COOKIE_SECRET = os.getenv("AUTH_COOKIE_SECRET")
-
-if not AUTH_COOKIE_SECRET:
-    raise RuntimeError(
-        "AUTH_COOKIE_SECRET environment variable is required"
-    )
+AUTH_COOKIE_SECRET = os.getenv(
+    "AUTH_COOKIE_SECRET",
+    DISCORD_CLIENT_SECRET or "change-this-secret",
+)
 
 def _encode_session(user):
     payload = base64.urlsafe_b64encode(
@@ -158,8 +156,6 @@ discord_intents.message_content = True
 discord_client = discord.Client(intents=discord_intents)
 discord_task = None
 chat_viewers = set()
-paused_frame_viewers = set()
-paused_chat_viewers = set()
 
 
 # stream_id -> stream information and latest frame
@@ -367,27 +363,6 @@ async def viewer_stream(websocket: WebSocket):
                 subscriptions = set(data.get("streams", []))
                 viewers[websocket] = subscriptions
 
-            elif data.get("type") == "pause_frames":
-                if websocket not in paused_frame_viewers:
-                    paused_frame_viewers.add(websocket)
-                    print(f"[VISIBILITY] viewer={id(websocket)} frames PAUSED", flush=True)
-
-            elif data.get("type") == "resume_frames":
-                if websocket in paused_frame_viewers:
-                    paused_frame_viewers.discard(websocket)
-                    print(f"[VISIBILITY] viewer={id(websocket)} frames RESUMED", flush=True)
-
-            elif data.get("type") == "pause_chat":
-                if websocket not in paused_chat_viewers:
-                    paused_chat_viewers.add(websocket)
-                    print(f"[VISIBILITY] viewer={id(websocket)} chat PAUSED", flush=True)
-
-            elif data.get("type") == "resume_chat":
-                if websocket in paused_chat_viewers:
-                    paused_chat_viewers.discard(websocket)
-                    print(f"[VISIBILITY] viewer={id(websocket)} chat RESUMED", flush=True)
-                await send_chat_history(websocket)
-
             elif data.get("type") == "chat_send":
                 if not session_user:
                     await websocket.send_text(json.dumps({
@@ -426,15 +401,6 @@ async def viewer_stream(websocket: WebSocket):
     finally:
         viewers.pop(websocket, None)
         chat_viewers.discard(websocket)
-        was_frame_paused = websocket in paused_frame_viewers
-        was_chat_paused = websocket in paused_chat_viewers
-        paused_frame_viewers.discard(websocket)
-        paused_chat_viewers.discard(websocket)
-        print(
-            f"[VISIBILITY] viewer={id(websocket)} disconnected "
-            f"(frames_paused={was_frame_paused}, chat_paused={was_chat_paused})",
-            flush=True,
-        )
 
 
 async def send_stream_list(websocket):
@@ -487,7 +453,6 @@ async def broadcast_frame(stream_id, frame):
         viewer
         for viewer, subscriptions in list(viewers.items())
         if stream_id in subscriptions
-        and viewer not in paused_frame_viewers
     ]
 
     async def send_frame(viewer):
@@ -648,8 +613,6 @@ async def on_message(message):
 async def broadcast_chat_history():
     payload = json.dumps({"type": "chat_history", "messages": chat_history_cache})
     for viewer in list(chat_viewers):
-        if viewer in paused_chat_viewers:
-            continue
         try:
             await viewer.send_text(payload)
         except Exception:
@@ -864,7 +827,6 @@ select,
 
 
 .stream-image-wrap {
-    position: relative;
     flex: 1 1 auto;
     min-width: 0;
     min-height: 0;
@@ -882,31 +844,6 @@ select,
     image-rendering: pixelated;
     image-rendering: crisp-edges;
 }
-
-.inactivity-overlay {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: rgba(0, 0, 0, 0.72);
-    z-index: 10;
-}
-.inactivity-overlay[hidden] { display: none; }
-.inactivity-resume {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 8px;
-    padding: 14px 22px;
-    border: 1px solid #aaa;
-    border-radius: 8px;
-    background: #222;
-    color: white;
-    font: inherit;
-    cursor: pointer;
-}
-.inactivity-resume:hover { background: #333; border-color: white; }
 
 #empty-message {
     grid-column: 1 / -1;
@@ -1165,64 +1102,6 @@ const ws = new WebSocket(
 
 ws.binaryType = "blob";
 
-const INACTIVITY_TIMEOUT = 15 * 60 * 1000;
-let inactive = false;
-let lastActivity = Date.now();
-let lastPointerActivity = 0;
-
-function registerActivity() {
-    lastActivity = Date.now();
-
-    if (inactive) {
-        inactive = false;
-        for (const tile of streamTiles.values()) {
-            tile.inactivityOverlay.hidden = true;
-        }
-    }
-}
-
-// Mouse/pointer movement counts as activity, but is throttled so normal
-// movement does not repeatedly reset the inactivity timer.
-function handlePointerActivity() {
-    const now = Date.now();
-    if (now - lastPointerActivity < 500) return;
-    lastPointerActivity = now;
-    registerActivity();
-}
-
-function pauseForInactivity() {
-    if (inactive) return;
-    inactive = true;
-    for (const tile of streamTiles.values()) {
-        tile.inactivityOverlay.hidden = false;
-    }
-}
-
-setInterval(() => {
-    if (!inactive && Date.now() - lastActivity >= INACTIVITY_TIMEOUT) {
-        pauseForInactivity();
-    }
-}, 1000);
-
-function updateVisibilityPauseState() {
-    if (ws.readyState !== WebSocket.OPEN) {
-        return;
-    }
-
-    const hidden = document.hidden;
-    ws.send(JSON.stringify({
-        type: hidden ? "pause_frames" : "resume_frames"
-    }));
-    ws.send(JSON.stringify({
-        type: hidden ? "pause_chat" : "resume_chat"
-    }));
-}
-
-document.addEventListener(
-    "visibilitychange",
-    updateVisibilityPauseState
-);
-
 const streamsElement =
     document.getElementById("streams");
 
@@ -1463,7 +1342,6 @@ function createTile(stream) {
     element.dataset.streamId = stream.stream_id;
 
     element.addEventListener("click", () => {
-        registerActivity();
         playerFilterElement.value =
             stream.stream_id;
 
@@ -1483,18 +1361,6 @@ function createTile(stream) {
     image.src = "/waiting.png";
 
     imageWrap.appendChild(image);
-
-    const inactivityOverlay = document.createElement("div");
-    inactivityOverlay.className = "inactivity-overlay";
-    inactivityOverlay.hidden = true;
-
-    const resumeButton = document.createElement("button");
-    resumeButton.className = "inactivity-resume";
-    resumeButton.type = "button";
-    resumeButton.innerHTML = "<strong>View paused</strong><span>Click to resume</span>";
-    inactivityOverlay.appendChild(resumeButton);
-    imageWrap.appendChild(inactivityOverlay);
-
     element.appendChild(name);
     element.appendChild(imageWrap);
 
@@ -1504,14 +1370,7 @@ function createTile(stream) {
         element: element,
         image: image,
         name: name,
-        inactivityOverlay: inactivityOverlay,
-        resumeButton: resumeButton,
     };
-
-    resumeButton.addEventListener("click", event => {
-        event.stopPropagation();
-        registerActivity();
-    });
 
     streamTiles.set(stream.stream_id, tile);
 
@@ -1778,7 +1637,7 @@ function addChatMessage(message) {
             '"': "&quot;",
             "'": "&#39;",
         })[character]);
-        content.innerHTML = escaped.replace(new RegExp("\\*\\*(.+?)\\*\\*", "g"), "<strong>$1</strong>");
+        content.innerHTML = escaped.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
     } else {
         content.textContent = messageText;
     }
@@ -1822,11 +1681,6 @@ function updateFrame(streamId, blob) {
 
 function renderPendingFrames() {
     renderScheduled = false;
-
-    if (inactive) {
-        pendingFrames.clear();
-        return;
-    }
 
     // Take a snapshot so frames that arrive during this render cycle
     // are left pending for the next animation frame.
@@ -1903,25 +1757,6 @@ maxStreamsElement.addEventListener(
     updateStreams
 );
 
-
-for (const element of [
-    tournamentFilterElement,
-    playerFilterElement,
-    maxStreamsElement,
-    backButton,
-    chatOpenButton,
-    chatInput,
-    chatForm,
-    authLoginElement,
-    authLogoutElement,
-]) {
-    element.addEventListener("click", registerActivity);
-    element.addEventListener("input", registerActivity);
-    element.addEventListener("change", registerActivity);
-    element.addEventListener("keydown", registerActivity);
-}
-
-window.addEventListener("pointermove", handlePointerActivity, { passive: true });
 
 ws.onmessage = function(event) {
     if (typeof event.data === "string") {
@@ -2028,7 +1863,6 @@ ws.onmessage = function(event) {
 
 ws.onopen = function() {
     console.log("Viewer connected");
-    updateVisibilityPauseState();
 };
 
 
