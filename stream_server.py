@@ -411,6 +411,7 @@ async def send_stream_list(websocket):
                 "stream_id": stream_id,
                 "username": stream["username"],
                 "game": stream["game"],
+                "streaming": stream.get("streaming", "full"),
             }
             for stream_id, stream in streams.items()
         ],
@@ -1319,7 +1320,11 @@ function clearImage(tile) {
         delete tile.image.dataset.url;
     }
 
-    tile.image.src = "/waiting.png";
+    if (tile.streaming === "progress") {
+        tile.image.src = "/waiting_progress.png";
+    } else {
+        tile.image.src = "/waiting.png";
+    }
 }
 
 
@@ -1358,7 +1363,11 @@ function createTile(stream) {
     const image = document.createElement("img");
     image.className = "stream-image";
     image.alt = stream.username;
-    image.src = "/waiting.png";
+    if (stream.streaming === "progress") {
+        image.src = "/waiting_progress.png";
+    } else {
+        image.src = "/waiting.png";
+    }
 
     imageWrap.appendChild(image);
     element.appendChild(name);
@@ -1370,6 +1379,7 @@ function createTile(stream) {
         element: element,
         image: image,
         name: name,
+        streaming: stream.streaming,
     };
 
     streamTiles.set(stream.stream_id, tile);
@@ -1541,6 +1551,7 @@ function updateStreams() {
 
             tile.image.alt =
                 stream.username;
+            tile.streaming = stream.streaming;
         }
 
         // Reorder tiles to match the current display order.
