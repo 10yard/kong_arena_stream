@@ -1637,7 +1637,7 @@ function addChatMessage(message) {
             '"': "&quot;",
             "'": "&#39;",
         })[character]);
-        content.innerHTML = escaped.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+        content.innerHTML = escaped.replace(/\\*\\*(.+?)\\*\\*/g, "<strong>$1</strong>");
     } else {
         content.textContent = messageText;
     }
