@@ -623,13 +623,13 @@ async def broadcast_chat_history():
         except Exception:
             chat_viewers.discard(viewer)
 
-async def chat_history_refresh_loop():
-    while True:
-        await asyncio.sleep(10)
-        try:
-            await refresh_chat_history()
-        except Exception as exc:
-            print(f"[Discord] Periodic history refresh failed: {exc}", flush=True)
+# async def chat_history_refresh_loop():
+#     while True:
+#         await asyncio.sleep(10)
+#         try:
+#             await refresh_chat_history()
+#         except Exception as exc:
+#             print(f"[Discord] Periodic history refresh failed: {exc}", flush=True)
 
 async def send_chat_history(websocket):
     await websocket.send_text(json.dumps({
@@ -1929,7 +1929,7 @@ async def start_cleanup():
     print("[Stream] Starting stale-stream cleanup task", flush=True)
     asyncio.create_task(cleanup_stale_streams())
     discord_task = asyncio.create_task(start_discord_bot())
-    asyncio.create_task(chat_history_refresh_loop())
+    # asyncio.create_task(chat_history_refresh_loop())
 
 @app.on_event("shutdown")
 async def stop_discord():
