@@ -268,9 +268,31 @@ async def client_stream(websocket: WebSocket):
             return
 
         stream_id = metadata["stream_id"]
+        username = metadata["username"]
+
+        # If this user already has an active stream, replace it.
+        old_stream_ids = [
+            existing_id
+            for existing_id, stream in list(streams.items())
+            if stream["username"] == username
+            and existing_id != stream_id
+        ]
+
+        for old_stream_id in old_stream_ids:
+            print(
+                f"[Stream] Replacing existing stream for {username}: "
+                f"{old_stream_id} -> {stream_id}",
+                flush=True,
+            )
+
+            # Tell viewers that the old stream has ended.
+            await broadcast_stream_end(old_stream_id)
+
+            # Remove the old stream from the authoritative stream list.
+            streams.pop(old_stream_id, None)
 
         streams[stream_id] = {
-            "username": metadata["username"],
+            "username": username,
             "game": metadata["game"],
             "streaming": metadata.get("streaming", "full"),
             "frame": None,
@@ -459,6 +481,10 @@ async def broadcast_frame(stream_id, frame):
         for viewer, subscriptions in list(viewers.items())
         if stream_id in subscriptions
     ]
+
+    # Nothing to broadcast if nobody is watching.
+    if not targets:
+        return
 
     async def send_frame(viewer):
         # Keep the control message and its frame together for this viewer.
