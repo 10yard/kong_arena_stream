@@ -161,6 +161,12 @@ chat_viewers = set()
 # stream_id -> stream information and latest frame
 streams = {}
 
+# Temporarily blocked streaming users.
+# Usernames are matched case-insensitively. Remove a name to unblock it.
+BLOCKED_USERS = {
+    "joecnnd": "Temporary block while investigating duplicate stream",
+}
+
 # WebSocket -> set of subscribed stream IDs
 viewers = {}
 
@@ -269,6 +275,16 @@ async def client_stream(websocket: WebSocket):
 
         stream_id = metadata["stream_id"]
         username = metadata["username"]
+
+        # Reject temporarily blocked users before registering the stream.
+        blocked_reason = BLOCKED_USERS.get(username.casefold())
+        if blocked_reason is not None:
+            print(
+                f"[Stream] Blocked user attempted to connect: {username} - {blocked_reason}",
+                flush=True,
+            )
+            await websocket.close(code=4003, reason="User temporarily blocked")
+            return
 
         # If this user already has an active stream, replace it.
         old_stream_ids = [
