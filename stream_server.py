@@ -164,7 +164,7 @@ streams = {}
 # Temporarily blocked streaming users.
 # Usernames are matched case-insensitively. Remove a name to unblock it.
 BLOCKED_USERS = {
-    "joecnnd": "Temporary block while investigating duplicate stream",
+    "ENTER_USER_NAME_HERE": "Temporary block while investigating issue",
 }
 
 # WebSocket -> set of subscribed stream IDs
