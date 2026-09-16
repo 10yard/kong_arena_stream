@@ -470,6 +470,68 @@ async def http_progress_stream(request: Request):
     return {"status": "ok"}
 
 
+@app.post("/stream/frame")
+async def http_frame_stream(request: Request):
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    stream_id = str(data.get("stream_id", "")).strip()
+    username = str(data.get("username", "")).strip()
+    game = str(data.get("game", "")).strip()
+    frame_data = data.get("frame")
+
+    if not stream_id or not username or not game or not frame_data:
+        return JSONResponse(
+            {"error": "Missing stream_id, username, game, or frame"},
+            status_code=400,
+        )
+
+    blocked_reason = BLOCKED_USERS.get(username.casefold())
+    if blocked_reason is not None:
+        print(
+            f"[Stream] Blocked user attempted HTTPS frame connection: "
+            f"{username} - {blocked_reason}",
+            flush=True,
+        )
+        return JSONResponse({"error": "User temporarily blocked"}, status_code=403)
+
+    try:
+        frame = base64.b64decode(frame_data, validate=True)
+    except Exception:
+        return JSONResponse({"error": "Invalid frame data"}, status_code=400)
+
+    if not frame:
+        return JSONResponse({"error": "Empty frame"}, status_code=400)
+
+    is_new_stream = stream_id not in streams
+
+    if is_new_stream:
+        streams[stream_id] = {
+            "username": username,
+            "game": game,
+            "streaming": "full",
+            "frame": None,
+            "last_frame": time.time(),
+        }
+        print(
+            f"HTTPS full stream started: {username} - {game}",
+            flush=True,
+        )
+
+    stream = streams[stream_id]
+    stream["frame"] = frame
+    stream["last_frame"] = time.time()
+
+    if is_new_stream:
+        await broadcast_stream_list()
+
+    await broadcast_frame(stream_id, frame)
+
+    return {"status": "ok"}
+
+
 @app.websocket("/ws/viewer")
 async def viewer_stream(websocket: WebSocket):
     await websocket.accept()
