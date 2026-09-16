@@ -17,7 +17,7 @@ import discord
 
 from PIL import Image
 
-STALE_STREAM_TIMEOUT = 30
+STALE_STREAM_TIMEOUT = 15
 PROGRESS_STALE_STREAM_TIMEOUT = 180
 
 PROGRESS_OVERLAY = Image.open("progress.png").convert("RGBA")
