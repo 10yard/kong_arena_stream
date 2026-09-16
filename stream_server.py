@@ -338,6 +338,7 @@ async def client_stream(websocket: WebSocket):
             "username": username,
             "game": metadata["game"],
             "streaming": metadata.get("streaming", "full"),
+            "transport": "websocket",
             "frame": None,
             "last_frame": time.time(),
         }
@@ -506,6 +507,7 @@ async def http_frame_stream(request: Request):
             "username": username,
             "game": game,
             "streaming": "full",
+            "transport": "https",
             "frame": None,
             "last_frame": time.time(),
         }
@@ -595,6 +597,7 @@ async def send_stream_list(websocket):
                 "username": stream["username"],
                 "game": stream["game"],
                 "streaming": stream.get("streaming", "full"),
+                "transport": stream.get("transport", "websocket"),
             }
             for stream_id, stream in streams.items()
         ],
@@ -1006,6 +1009,27 @@ select,
 
 .stream-user {
     font-size: 1.2em;
+}
+
+.stream-status-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    margin-right: 5px;
+    vertical-align: middle;
+}
+
+.stream-status-websocket {
+    background: #28a745;
+}
+
+.stream-status-https {
+    background: #f0c419;
+}
+
+.stream-status-progress {
+    background: #dc3545;
 }
 
 .stream-game {
@@ -1542,7 +1566,20 @@ function createTile(stream) {
 
     const name = document.createElement("div");
     name.className = "stream-name";
-    name.textContent = stream.username;
+
+    const dot = document.createElement("span");
+    dot.className = "stream-status-dot";
+
+    if (stream.streaming === "progress") {
+        dot.classList.add("stream-status-progress");
+    } else if (stream.transport === "https") {
+        dot.classList.add("stream-status-https");
+    } else {
+        dot.classList.add("stream-status-websocket");
+    }
+
+    name.appendChild(dot);
+    name.appendChild(document.createTextNode(stream.username));
 
     const imageWrap = document.createElement("div");
     imageWrap.className = "stream-image-wrap";
