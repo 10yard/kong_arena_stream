@@ -261,6 +261,33 @@ async def auth_logout():
     response.delete_cookie(AUTH_COOKIE_NAME)
     return response
 
+def process_progress_frame(frame):
+    image = Image.open(
+        io.BytesIO(frame)
+    ).convert("RGBA")
+
+    if PROGRESS_OVERLAY.size == image.size:
+        overlay = PROGRESS_OVERLAY
+    else:
+        overlay = PROGRESS_OVERLAY.resize(
+            image.size,
+            Image.Resampling.LANCZOS,
+        )
+
+    image = Image.alpha_composite(
+        image,
+        overlay,
+    )
+
+    output = io.BytesIO()
+    image.save(
+        output,
+        format="PNG",
+    )
+
+    return output.getvalue()
+
+
 @app.websocket("/ws/client")
 async def client_stream(websocket: WebSocket):
     await websocket.accept()
@@ -331,30 +358,7 @@ async def client_stream(websocket: WebSocket):
             if stream_id in streams:
 
                 if streams[stream_id]["streaming"] == "progress":
-                    image = Image.open(
-                        io.BytesIO(frame)
-                    ).convert("RGBA")
-
-                    if PROGRESS_OVERLAY.size == image.size:
-                        overlay = PROGRESS_OVERLAY
-                    else:
-                        overlay = PROGRESS_OVERLAY.resize(
-                            image.size,
-                            Image.Resampling.LANCZOS,
-                        )
-
-                    image = Image.alpha_composite(
-                        image,
-                        overlay,
-                    )
-
-                    output = io.BytesIO()
-                    image.save(
-                        output,
-                        format="PNG",
-                    )
-
-                    frame = output.getvalue()
+                    frame = process_progress_frame(frame)
 
 
                 streams[stream_id]["frame"] = frame
@@ -383,6 +387,87 @@ async def client_stream(websocket: WebSocket):
 
             streams.pop(stream_id, None)
             await broadcast_stream_list()
+
+
+@app.post("/stream/progress")
+async def http_progress_stream(request: Request):
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"error": "Invalid JSON"},
+            status_code=400,
+        )
+
+    stream_id = str(data.get("stream_id", "")).strip()
+    username = str(data.get("username", "")).strip()
+    game = str(data.get("game", "")).strip()
+    frame_data = data.get("frame")
+
+    if not stream_id or not username or not game or not frame_data:
+        return JSONResponse(
+            {"error": "Missing stream_id, username, game, or frame"},
+            status_code=400,
+        )
+
+    # Apply the same temporary user block as the WebSocket stream.
+    blocked_reason = BLOCKED_USERS.get(username.casefold())
+    if blocked_reason is not None:
+        print(
+            f"[Stream] Blocked user attempted HTTPS progress connection: "
+            f"{username} - {blocked_reason}",
+            flush=True,
+        )
+        return JSONResponse(
+            {"error": "User temporarily blocked"},
+            status_code=403,
+        )
+
+    try:
+        frame = base64.b64decode(frame_data, validate=True)
+    except Exception:
+        return JSONResponse(
+            {"error": "Invalid frame data"},
+            status_code=400,
+        )
+
+    if not frame:
+        return JSONResponse(
+            {"error": "Empty frame"},
+            status_code=400,
+        )
+
+    is_new_stream = stream_id not in streams
+
+    if is_new_stream:
+        streams[stream_id] = {
+            "username": username,
+            "game": game,
+            "streaming": "progress",
+            "frame": None,
+            "last_frame": time.time(),
+        }
+
+        print(
+            f"HTTPS progress stream started: {username} - {game}",
+            flush=True,
+        )
+
+    stream = streams[stream_id]
+
+    # A progress stream always receives the same overlay processing
+    # as progress frames arriving over WebSocket.
+    frame = process_progress_frame(frame)
+
+    stream["frame"] = frame
+    stream["last_frame"] = time.time()
+
+    if is_new_stream:
+        await broadcast_stream_list()
+
+    await broadcast_frame(stream_id, frame)
+
+    return {"status": "ok"}
 
 
 @app.websocket("/ws/viewer")
