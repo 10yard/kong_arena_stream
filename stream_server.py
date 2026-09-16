@@ -17,7 +17,7 @@ import discord
 
 from PIL import Image
 
-STALE_STREAM_TIMEOUT = 15
+STALE_STREAM_TIMEOUT = 30
 PROGRESS_STALE_STREAM_TIMEOUT = 180
 
 PROGRESS_OVERLAY = Image.open("progress.png").convert("RGBA")
@@ -472,21 +472,20 @@ async def http_progress_stream(request: Request):
 
 @app.post("/stream/frame")
 async def http_frame_stream(request: Request):
-    try:
-        data = await request.json()
-    except Exception:
-        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+    stream_id = request.headers.get("X-Stream-ID", "").strip()
+    username = request.headers.get("X-Username", "").strip()
+    game = request.headers.get("X-Game", "").strip()
 
-    stream_id = str(data.get("stream_id", "")).strip()
-    username = str(data.get("username", "")).strip()
-    game = str(data.get("game", "")).strip()
-    frame_data = data.get("frame")
-
-    if not stream_id or not username or not game or not frame_data:
+    if not stream_id or not username or not game:
         return JSONResponse(
-            {"error": "Missing stream_id, username, game, or frame"},
+            {"error": "Missing X-Stream-ID, X-Username, or X-Game header"},
             status_code=400,
         )
+
+    try:
+        frame = await request.body()
+    except Exception:
+        return JSONResponse({"error": "Invalid request body"}, status_code=400)
 
     blocked_reason = BLOCKED_USERS.get(username.casefold())
     if blocked_reason is not None:
@@ -496,11 +495,6 @@ async def http_frame_stream(request: Request):
             flush=True,
         )
         return JSONResponse({"error": "User temporarily blocked"}, status_code=403)
-
-    try:
-        frame = base64.b64decode(frame_data, validate=True)
-    except Exception:
-        return JSONResponse({"error": "Invalid frame data"}, status_code=400)
 
     if not frame:
         return JSONResponse({"error": "Empty frame"}, status_code=400)
