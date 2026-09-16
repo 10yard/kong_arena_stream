@@ -445,7 +445,6 @@ async def http_progress_stream(request: Request):
             "username": username,
             "game": game,
             "streaming": "progress",
-            "transport": "https",
             "frame": None,
             "last_frame": time.time(),
         }
