@@ -1011,27 +1011,6 @@ select,
     font-size: 1.2em;
 }
 
-.stream-status-dot {
-    display: inline-block;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    margin-right: 5px;
-    vertical-align: middle;
-}
-
-.stream-status-websocket {
-    background: #28a745;
-}
-
-.stream-status-https {
-    background: #f0c419;
-}
-
-.stream-status-progress {
-    background: #dc3545;
-}
-
 .stream-game {
     font-size: 0.9em;
     opacity: 0.85;
@@ -1760,7 +1739,16 @@ function updateStreams() {
 			user.className = "stream-user";
 			user.textContent = stream.username;
 
-			const separator = document.createTextNode("\u00A0\u00A0•\u00A0\u00A0");
+			const separator = document.createElement("span");
+			separator.textContent = "\u00A0\u00A0•\u00A0\u00A0";
+
+			if (stream.streaming === "progress") {
+				separator.style.color = "#dc3545";
+			} else if (stream.transport === "https") {
+				separator.style.color = "#f0c419";
+			} else {
+				separator.style.color = "#28a745";
+			}
 
 			const game = document.createElement("span");
 			game.className = "stream-game";
